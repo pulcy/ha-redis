@@ -1,0 +1,75 @@
+{
+    "env" : [
+        {
+            "name" : "development",
+            "packages": [
+                {
+                    "name" : "github.com/adjust/bufio",
+                    "branch" : "master"
+                },
+                {
+                    "name" : "github.com/onsi/ginkgo",
+                    "branch" : "master"
+                },
+                {
+                    "name" : "github.com/onsi/gomega",
+                    "branch" : "master"
+                }
+            ]
+        },
+        {
+            "name" : "production",
+            "packages": [
+                {
+                    "name" : "github.com/adjust/bufio",
+                    "branch" : "master"
+                },
+                {
+                    "name" : "github.com/onsi/ginkgo",
+                    "branch" : "master"
+                },
+                {
+                    "name" : "github.com/onsi/gomega",
+                    "branch" : "master"
+                }
+            ]
+        },
+        {
+            "name" : "staging",
+            "packages": [
+                {
+                    "name" : "github.com/adjust/bufio",
+                    "branch" : "master"
+                },
+                {
+                    "name" : "github.com/onsi/ginkgo",
+                    "branch" : "master"
+                },
+                {
+                    "name" : "github.com/onsi/gomega",
+                    "branch" : "master"
+                }
+            ]
+        },
+
+        {
+            "name" : "jenkins",
+            "packages": [
+                {
+                    "name" : "github.com/adjust/bufio",
+                    "branch" : "master"
+                },
+                {
+                    "name" : "github.com/onsi/ginkgo",
+                    "branch" : "master"
+                },
+                {
+                    "name" : "github.com/onsi/gomega",
+                    "branch" : "master"
+                }
+            ]
+        }
+
+    ],
+    "testdir": "."
+}

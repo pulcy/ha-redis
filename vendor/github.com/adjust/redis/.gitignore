@@ -1,0 +1,8 @@
+*.rdb
+.DS_Store
+**log/
+**.go/
+**Gofile.lock
+**a.out
+
+*.lock

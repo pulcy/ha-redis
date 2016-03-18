@@ -16,6 +16,7 @@ package service
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"time"
@@ -106,4 +107,28 @@ func (s *Service) connectRedis() (*redis.Client, error) {
 	}
 
 	return client, nil
+}
+
+// ping tries to connect to a redis on given IP+port and ping it
+func (s *Service) ping(ip, port string) error {
+	options := &redis.Options{
+		Addr:        fmt.Sprintf("%s:%s", ip, port),
+		IdleTimeout: 240 * time.Second,
+	}
+	client := redis.NewTCPClient(options)
+
+	if err := retry.Do(func() error {
+		if err := client.Ping().Err(); err != nil {
+			s.Logger.Debug(nil, "Failed to ping redis on %s:%s: %#v", ip, port, err)
+			return maskAny(err)
+		}
+		return nil
+	},
+		retry.Timeout(time.Second*30),
+		retry.MaxTries(30),
+		retry.Sleep(time.Millisecond*500)); err != nil {
+		return maskAny(err)
+	}
+
+	return nil
 }

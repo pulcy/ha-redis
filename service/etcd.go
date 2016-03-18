@@ -15,7 +15,10 @@
 package service
 
 import (
+	"time"
+
 	"github.com/coreos/etcd/client"
+	"github.com/giantswarm/retry-go"
 	"golang.org/x/net/context"
 )
 
@@ -46,15 +49,25 @@ func (s *Service) tryBecomeMaster() (bool, string, error) {
 
 // updateMaster tries to update the master key
 func (s *Service) updateMaster() error {
-	kAPI := client.NewKeysAPI(s.client)
-	options := &client.SetOptions{
-		PrevValue: s.ourRedisUrl,
-		PrevExist: client.PrevExist,
-		TTL:       s.MasterTTL,
-		Refresh:   true,
+	update := func() error {
+		kAPI := client.NewKeysAPI(s.client)
+		options := &client.SetOptions{
+			PrevValue: s.ourRedisUrl,
+			PrevExist: client.PrevExist,
+			TTL:       s.MasterTTL,
+			Refresh:   true,
+		}
+		if _, err := kAPI.Set(context.Background(), s.masterKey, s.ourRedisUrl, options); err != nil {
+			// An error occurred
+			return maskAny(err)
+		}
+		return nil
 	}
-	if _, err := kAPI.Set(context.Background(), s.masterKey, s.ourRedisUrl, options); err != nil {
-		// An error occurred
+
+	if err := retry.Do(update,
+		retry.Timeout(s.MasterTTL/3),
+		retry.MaxTries(25),
+		retry.Sleep(time.Millisecond*250)); err != nil {
 		return maskAny(err)
 	}
 

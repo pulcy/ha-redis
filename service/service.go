@@ -177,10 +177,23 @@ func (s *Service) actAsSlave(masterURL string) error {
 	}
 	s.Logger.Infof("Acting as slave of '%s'", masterURL)
 
-	// Wait for changes in ETCD
-	if err := s.watchForMasterChanges(masterURL); err != nil {
-		return maskAny(err)
-	}
+	for {
+		// Wait for changes in ETCD
+		if err := s.watchForMasterChanges(masterURL); err == nil {
+			// Different master
+			return nil
+		} else {
+			s.Logger.Infof("watchForMasterChanges failed: %#v", err)
+		}
 
-	return nil
+		if err := s.ping(masterIP, masterPort); err != nil {
+			// Can not ping the master, assume it is gone
+			s.Logger.Infof("cannot ping master, assume it is gone: %v", err)
+			return nil
+		}
+
+		// Ping succeeds, just retry
+		s.Logger.Info("ping to master still succeeds, remaining slave for now")
+		time.Sleep(time.Millisecond * 250)
+	}
 }

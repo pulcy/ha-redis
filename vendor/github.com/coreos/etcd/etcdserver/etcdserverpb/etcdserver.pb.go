@@ -50,13 +50,46 @@
 		MemberUpdateResponse
 		MemberListRequest
 		MemberListResponse
+		DefragmentRequest
+		DefragmentResponse
+		AlarmRequest
+		AlarmMember
+		AlarmResponse
+		AuthEnableRequest
+		AuthDisableRequest
+		AuthenticateRequest
+		AuthUserAddRequest
+		AuthUserGetRequest
+		AuthUserDeleteRequest
+		AuthUserChangePasswordRequest
+		AuthUserGrantRequest
+		AuthUserRevokeRequest
+		AuthRoleAddRequest
+		AuthRoleGetRequest
+		AuthRoleDeleteRequest
+		AuthRoleGrantRequest
+		AuthRoleRevokeRequest
+		AuthEnableResponse
+		AuthDisableResponse
+		AuthenticateResponse
+		AuthUserAddResponse
+		AuthUserGetResponse
+		AuthUserDeleteResponse
+		AuthUserChangePasswordResponse
+		AuthUserGrantResponse
+		AuthUserRevokeResponse
+		AuthRoleAddResponse
+		AuthRoleGetResponse
+		AuthRoleDeleteResponse
+		AuthRoleGrantResponse
+		AuthRoleRevokeResponse
 */
 package etcdserverpb
 
 import (
 	"fmt"
 
-	proto "github.com/coreos/etcd/Godeps/_workspace/src/github.com/gogo/protobuf/proto"
+	proto "github.com/gogo/protobuf/proto"
 )
 
 import math "math"

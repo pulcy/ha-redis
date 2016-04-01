@@ -30,11 +30,6 @@ service KV {
   // Compact compacts the event history in etcd. User should compact the
   // event history periodically, or it will grow infinitely.
   rpc Compact(CompactionRequest) returns (CompactionResponse) {}
-
-  // Hash returns the hash of local KV state for consistency checking purpose.
-  // This is designed for testing purpose. Do not use this in production when there
-  // are ongoing transactions.
-  rpc Hash(HashRequest) returns (HashResponse) {}
 }
 
 service Watch {
@@ -74,6 +69,62 @@ service Cluster {
 
   // MemberList lists all the members in the cluster.
   rpc MemberList(MemberListRequest) returns (MemberListResponse) {}
+}
+
+service Maintenance {
+  // Alarm activates, deactivates, and queries alarms regarding cluster health.
+  rpc Alarm(AlarmRequest) returns (AlarmResponse) {}
+
+  rpc Defragment(DefragmentRequest) returns (DefragmentResponse) {}
+
+  // Hash returns the hash of the local KV state for consistency checking purpose.
+  // This is designed for testing; do not use this in production when there
+  // are ongoing transactions.
+  rpc Hash(HashRequest) returns (HashResponse) {}
+}
+
+service Auth {
+  // AuthEnable enables authentication.
+  rpc AuthEnable(AuthEnableRequest) returns (AuthEnableResponse) {}
+
+  // AuthDisable disables authentication.
+  rpc AuthDisable(AuthDisableRequest) returns (AuthDisableResponse) {}
+
+  // Authenticate processes authenticate request.
+  rpc Authenticate(AuthenticateRequest) returns (AuthenticateResponse) {}
+
+  // UserAdd adds a new user.
+  rpc UserAdd(AuthUserAddRequest) returns (AuthUserAddResponse) {}
+
+  // UserGet gets a detailed information of a user or lists entire users.
+  rpc UserGet(AuthUserGetRequest) returns (AuthUserGetResponse) {}
+
+  // UserDelete deletes a specified user.
+  rpc UserDelete(AuthUserDeleteRequest) returns (AuthUserDeleteResponse) {}
+
+  // UserChangePassword changes password of a specified user.
+  rpc UserChangePassword(AuthUserChangePasswordRequest) returns (AuthUserChangePasswordResponse) {}
+
+  // UserGrant grants a role to a specified user.
+  rpc UserGrant(AuthUserGrantRequest) returns (AuthUserGrantResponse) {}
+
+  // UserRevoke revokes a role of specified user.
+  rpc UserRevoke(AuthUserRevokeRequest) returns (AuthUserRevokeResponse) {}
+
+  // RoleAdd adds a new role.
+  rpc RoleAdd(AuthRoleAddRequest) returns (AuthRoleAddResponse) {}
+
+  // RoleGet gets a detailed information of a role or lists entire roles.
+  rpc RoleGet(AuthRoleGetRequest) returns (AuthRoleGetResponse) {}
+
+  // RoleDelete deletes a specified role.
+  rpc RoleDelete(AuthRoleDeleteRequest) returns (AuthRoleDeleteResponse) {}
+
+  // RoleGrant grants a permission of a specified key or range to a specified role.
+  rpc RoleGrant(AuthRoleGrantRequest) returns (AuthRoleGrantResponse) {}
+
+  // RoleRevoke revokes a key or range permission of a specified role.
+  rpc RoleRevoke(AuthRoleRevokeRequest) returns (AuthRoleRevokeResponse) {}
 }
 
 message ResponseHeader {
@@ -238,6 +289,10 @@ message TxnResponse {
 // revision.
 message CompactionRequest {
   int64 revision = 1;
+  // physical is set so the RPC will wait until the compaction is physically
+  // applied to the local database such that compacted entries are totally
+  // removed from the backing store.
+  bool physical = 2;
 }
 
 message CompactionResponse {
@@ -262,11 +317,16 @@ message WatchRequest {
 message WatchCreateRequest {
   // the key to be watched
   bytes key = 1;
-  // the prefix to be watched.
-  bytes prefix = 2;
+  // if the range_end is given, keys in [key, range_end) are watched
+  // NOTE: only range_end == prefixEnd(key) is accepted now
+  bytes range_end = 2;
   // start_revision is an optional revision (including) to watch from. No start_revision is "now".
   int64 start_revision = 3;
-  // TODO: support Range watch?
+  // if progress_notify is set, etcd server sends WatchResponse with empty events to the 
+  // created watcher when there are no recent events. It is useful when clients want always to be
+  // able to recover a disconnected watcher from a recent known revision.
+  // etcdsever can decide how long it should send a notification based on current load.
+  bool progress_notify = 4;
 }
 
 message WatchCancelRequest {
@@ -374,4 +434,142 @@ message MemberListRequest {
 message MemberListResponse {
   ResponseHeader header = 1;
   repeated Member members = 2;
+}
+
+message DefragmentRequest {
+
+}
+
+message DefragmentResponse {
+  ResponseHeader header = 1;
+}
+
+enum AlarmType {
+	NONE = 0; // default, used to query if any alarm is active
+	NOSPACE = 1;
+}
+
+message AlarmRequest {
+  enum AlarmAction {
+	GET = 0;
+	ACTIVATE = 1;
+	DEACTIVATE = 2;
+  }
+  AlarmAction action = 1;
+  // MemberID is the member raising the alarm request
+  uint64 memberID = 2;
+  AlarmType alarm = 3;
+}
+
+message AlarmMember {
+	uint64	memberID = 1;
+	AlarmType alarm = 2;
+}
+
+message AlarmResponse {
+  ResponseHeader header = 1;
+  repeated AlarmMember alarms = 2;
+}
+
+message AuthEnableRequest {
+}
+
+message AuthDisableRequest {
+}
+
+message AuthenticateRequest {
+}
+
+message AuthUserAddRequest {
+  string name = 1;
+  string password = 2;
+}
+
+message AuthUserGetRequest {
+}
+
+message AuthUserDeleteRequest {
+  string name = 1;
+}
+
+message AuthUserChangePasswordRequest {
+  string name = 1;
+  string password = 2;
+}
+
+message AuthUserGrantRequest {
+}
+
+message AuthUserRevokeRequest {
+}
+
+message AuthRoleAddRequest {
+}
+
+message AuthRoleGetRequest {
+}
+
+message AuthRoleDeleteRequest {
+}
+
+message AuthRoleGrantRequest {
+}
+
+message AuthRoleRevokeRequest {
+}
+
+message AuthEnableResponse {
+  ResponseHeader header = 1;
+}
+
+message AuthDisableResponse {
+  ResponseHeader header = 1;
+}
+
+message AuthenticateResponse {
+  ResponseHeader header = 1;
+}
+
+message AuthUserAddResponse {
+  ResponseHeader header = 1;
+}
+
+message AuthUserGetResponse {
+  ResponseHeader header = 1;
+}
+
+message AuthUserDeleteResponse {
+  ResponseHeader header = 1;
+}
+
+message AuthUserChangePasswordResponse {
+  ResponseHeader header = 1;
+}
+
+message AuthUserGrantResponse {
+  ResponseHeader header = 1;
+}
+
+message AuthUserRevokeResponse {
+  ResponseHeader header = 1;
+}
+
+message AuthRoleAddResponse {
+  ResponseHeader header = 1;
+}
+
+message AuthRoleGetResponse {
+  ResponseHeader header = 1;
+}
+
+message AuthRoleDeleteResponse {
+  ResponseHeader header = 1;
+}
+
+message AuthRoleGrantResponse {
+  ResponseHeader header = 1;
+}
+
+message AuthRoleRevokeResponse {
+  ResponseHeader header = 1;
 }

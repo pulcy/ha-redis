@@ -19,7 +19,7 @@ package backend
 import (
 	"syscall"
 
-	"github.com/coreos/etcd/Godeps/_workspace/src/github.com/boltdb/bolt"
+	"github.com/boltdb/bolt"
 )
 
 // syscall.MAP_POPULATE on linux 2.6.23+ does sequential read-ahead
@@ -30,5 +30,5 @@ import (
 // silently ignore this flag. Please update your kernel to prevent this.
 var boltOpenOptions = &bolt.Options{
 	MmapFlags:       syscall.MAP_POPULATE,
-	InitialMmapSize: InitialMmapSize,
+	InitialMmapSize: int(InitialMmapSize),
 }

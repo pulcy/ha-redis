@@ -18,10 +18,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coreos/etcd/Godeps/_workspace/src/golang.org/x/net/context"
 	"github.com/coreos/etcd/clientv3"
 	"github.com/coreos/etcd/integration"
 	"github.com/coreos/etcd/pkg/testutil"
+	"golang.org/x/net/context"
 )
 
 func TestTxnWriteFail(t *testing.T) {
@@ -45,8 +45,9 @@ func TestTxnWriteFail(t *testing.T) {
 		donec <- struct{}{}
 	}()
 
+	dialTimeout := 5 * time.Second
 	select {
-	case <-time.After(5 * time.Second):
+	case <-time.After(2*dialTimeout + time.Second):
 		t.Fatalf("timed out waiting for txn to fail")
 	case <-donec:
 		// don't restart cluster until txn errors out

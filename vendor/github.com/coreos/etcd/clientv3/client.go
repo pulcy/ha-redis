@@ -15,17 +15,19 @@
 package clientv3
 
 import (
+	"crypto/tls"
 	"errors"
+	"io/ioutil"
+	"log"
 	"net"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/coreos/etcd/Godeps/_workspace/src/google.golang.org/grpc"
-	"github.com/coreos/etcd/Godeps/_workspace/src/google.golang.org/grpc/credentials"
-	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
-	"github.com/coreos/etcd/pkg/transport"
+	"golang.org/x/net/context"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 var (
@@ -34,20 +36,21 @@ var (
 
 // Client provides and manages an etcd v3 client session.
 type Client struct {
-	// KV is the keyvalue API for the client's connection.
-	KV pb.KVClient
-	// Lease is the lease API for the client's connection.
-	Lease pb.LeaseClient
-	// Watch is the watch API for the client's connection.
-	Watch pb.WatchClient
-	// Cluster is the cluster API for the client's connection.
-	Cluster pb.ClusterClient
+	Cluster
+	KV
+	Lease
+	Watcher
+	Auth
+	Maintenance
 
 	conn   *grpc.ClientConn
 	cfg    Config
 	creds  *credentials.TransportAuthenticator
 	mu     sync.RWMutex // protects connection selection and error list
 	errors []error      // errors passed to retryConnection
+
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // EndpointDialer is a policy for choosing which endpoint to dial next
@@ -64,7 +67,10 @@ type Config struct {
 	DialTimeout time.Duration
 
 	// TLS holds the client secure credentials, if any.
-	TLS *transport.TLSInfo
+	TLS *tls.Config
+
+	// Logger is the logger used by client library.
+	Logger Logger
 }
 
 // New creates a new etcdv3 client from a given configuration.
@@ -86,8 +92,23 @@ func NewFromURL(url string) (*Client, error) {
 
 // Close shuts down the client's etcd connections.
 func (c *Client) Close() error {
+	c.mu.Lock()
+	if c.cancel == nil {
+		c.mu.Unlock()
+		return nil
+	}
+	c.cancel()
+	c.cancel = nil
+	c.mu.Unlock()
+	c.Watcher.Close()
+	c.Lease.Close()
 	return c.conn.Close()
 }
+
+// Ctx is a context for "out of band" messages (e.g., for sending
+// "clean up" message when another context is canceled). It is
+// canceled on client Close().
+func (c *Client) Ctx() context.Context { return c.ctx }
 
 // Endpoints lists the registered endpoints for the client.
 func (c *Client) Endpoints() []string { return c.cfg.Endpoints }
@@ -112,14 +133,22 @@ func (c *Client) Dial(endpoint string) (*grpc.ClientConn, error) {
 	} else {
 		opts = append(opts, grpc.WithInsecure())
 	}
+
+	proto := "tcp"
 	if url, uerr := url.Parse(endpoint); uerr == nil && url.Scheme == "unix" {
-		f := func(a string, t time.Duration) (net.Conn, error) {
-			return net.DialTimeout("unix", a, t)
-		}
+		proto = "unix"
 		// strip unix:// prefix so certs work
 		endpoint = url.Host
-		opts = append(opts, grpc.WithDialer(f))
 	}
+	f := func(a string, t time.Duration) (net.Conn, error) {
+		select {
+		case <-c.ctx.Done():
+			return nil, c.ctx.Err()
+		default:
+		}
+		return net.DialTimeout(proto, a, t)
+	}
+	opts = append(opts, grpc.WithDialer(f))
 
 	conn, err := grpc.Dial(endpoint, opts...)
 	if err != nil {
@@ -134,27 +163,36 @@ func newClient(cfg *Config) (*Client, error) {
 	}
 	var creds *credentials.TransportAuthenticator
 	if cfg.TLS != nil {
-		tlscfg, err := cfg.TLS.ClientConfig()
-		if err != nil {
-			return nil, err
-		}
-		c := credentials.NewTLS(tlscfg)
+		c := credentials.NewTLS(cfg.TLS)
 		creds = &c
 	}
 	// use a temporary skeleton client to bootstrap first connection
-	conn, err := cfg.RetryDialer(&Client{cfg: *cfg, creds: creds})
+	ctx, cancel := context.WithCancel(context.TODO())
+	conn, err := cfg.RetryDialer(&Client{cfg: *cfg, creds: creds, ctx: ctx})
 	if err != nil {
 		return nil, err
 	}
-	return &Client{
-		KV:      pb.NewKVClient(conn),
-		Lease:   pb.NewLeaseClient(conn),
-		Watch:   pb.NewWatchClient(conn),
-		Cluster: pb.NewClusterClient(conn),
-		conn:    conn,
-		cfg:     *cfg,
-		creds:   creds,
-	}, nil
+	client := &Client{
+		conn:   conn,
+		cfg:    *cfg,
+		creds:  creds,
+		ctx:    ctx,
+		cancel: cancel,
+	}
+	client.Cluster = NewCluster(client)
+	client.KV = NewKV(client)
+	client.Lease = NewLease(client)
+	client.Watcher = NewWatcher(client)
+	client.Auth = NewAuth(client)
+	client.Maintenance = NewMaintenance(client)
+	if cfg.Logger != nil {
+		logger.Set(cfg.Logger)
+	} else {
+		// disable client side grpc by default
+		logger.Set(log.New(ioutil.Discard, "", 0))
+	}
+
+	return client, nil
 }
 
 // ActiveConnection returns the current in-use connection
@@ -171,10 +209,20 @@ func (c *Client) retryConnection(oldConn *grpc.ClientConn, err error) (*grpc.Cli
 	if err != nil {
 		c.errors = append(c.errors, err)
 	}
+	if c.cancel == nil {
+		return nil, c.ctx.Err()
+	}
 	if oldConn != c.conn {
 		// conn has already been updated
 		return c.conn, nil
 	}
+
+	oldConn.Close()
+	if st, _ := oldConn.State(); st != grpc.Shutdown {
+		// wait for shutdown so grpc doesn't leak sleeping goroutines
+		oldConn.WaitForStateChange(c.ctx, st)
+	}
+
 	conn, dialErr := c.cfg.RetryDialer(c)
 	if dialErr != nil {
 		c.errors = append(c.errors, dialErr)
@@ -199,6 +247,9 @@ func dialEndpointList(c *Client) (*grpc.ClientConn, error) {
 	return nil, err
 }
 
-func isRPCError(err error) bool {
-	return strings.HasPrefix(grpc.ErrorDesc(err), "etcdserver: ")
+// isHalted returns true if the given error and context indicate no forward
+// progress can be made, even after reconnecting.
+func isHalted(ctx context.Context, err error) bool {
+	isRPCError := strings.HasPrefix(grpc.ErrorDesc(err), "etcdserver: ")
+	return isRPCError || ctx.Err() != nil
 }

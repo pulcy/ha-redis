@@ -21,10 +21,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/coreos/etcd/Godeps/_workspace/src/github.com/cheggaaa/pb"
-	"github.com/coreos/etcd/Godeps/_workspace/src/github.com/spf13/cobra"
-	"github.com/coreos/etcd/Godeps/_workspace/src/golang.org/x/net/context"
-	"github.com/coreos/etcd/etcdserver/etcdserverpb"
+	v3 "github.com/coreos/etcd/clientv3"
+	"github.com/spf13/cobra"
+	"golang.org/x/net/context"
+	"gopkg.in/cheggaaa/pb.v1"
 )
 
 // putCmd represents the put command
@@ -43,6 +43,9 @@ var (
 
 	keySpaceSize int
 	seqKeys      bool
+
+	compactInterval   time.Duration
+	compactIndexDelta int64
 )
 
 func init() {
@@ -52,6 +55,8 @@ func init() {
 	putCmd.Flags().IntVar(&putTotal, "total", 10000, "Total number of put requests")
 	putCmd.Flags().IntVar(&keySpaceSize, "key-space-size", 1, "Maximum possible keys")
 	putCmd.Flags().BoolVar(&seqKeys, "sequential-keys", false, "Use sequential keys")
+	putCmd.Flags().DurationVar(&compactInterval, "compact-interval", 0, `Interval to compact database (do not duplicate this with etcd's 'auto-compaction-retention' flag) (e.g. --compact-interval=5m compacts every 5-minute)`)
+	putCmd.Flags().Int64Var(&compactIndexDelta, "compact-index-delta", 1000, "Delta between current revision and compact revision (e.g. current revision 10000, compact at 9000)")
 }
 
 func putFunc(cmd *cobra.Command, args []string) {
@@ -61,10 +66,10 @@ func putFunc(cmd *cobra.Command, args []string) {
 	}
 
 	results = make(chan result)
-	requests := make(chan etcdserverpb.PutRequest, totalClients)
+	requests := make(chan v3.Op, totalClients)
 	bar = pb.New(putTotal)
 
-	k, v := make([]byte, keySize), mustRandBytes(valSize)
+	k, v := make([]byte, keySize), string(mustRandBytes(valSize))
 
 	clients := mustCreateClients(totalClients, totalConns)
 
@@ -73,7 +78,7 @@ func putFunc(cmd *cobra.Command, args []string) {
 
 	for i := range clients {
 		wg.Add(1)
-		go doPut(context.Background(), clients[i].KV, requests)
+		go doPut(context.Background(), clients[i], requests)
 	}
 
 	pdoneC := printReport(results)
@@ -85,10 +90,19 @@ func putFunc(cmd *cobra.Command, args []string) {
 			} else {
 				binary.PutVarint(k, int64(rand.Intn(keySpaceSize)))
 			}
-			requests <- etcdserverpb.PutRequest{Key: k, Value: v}
+			requests <- v3.OpPut(string(k), v)
 		}
 		close(requests)
 	}()
+
+	if compactInterval > 0 {
+		go func() {
+			for {
+				time.Sleep(compactInterval)
+				compactKV(clients)
+			}
+		}()
+	}
 
 	wg.Wait()
 
@@ -98,18 +112,49 @@ func putFunc(cmd *cobra.Command, args []string) {
 	<-pdoneC
 }
 
-func doPut(ctx context.Context, client etcdserverpb.KVClient, requests <-chan etcdserverpb.PutRequest) {
+func doPut(ctx context.Context, client v3.KV, requests <-chan v3.Op) {
 	defer wg.Done()
 
-	for r := range requests {
+	for op := range requests {
 		st := time.Now()
-		_, err := client.Put(ctx, &r)
+		_, err := client.Do(ctx, op)
 
 		var errStr string
 		if err != nil {
 			errStr = err.Error()
 		}
-		results <- result{errStr: errStr, duration: time.Since(st)}
+		results <- result{errStr: errStr, duration: time.Since(st), happened: time.Now()}
 		bar.Increment()
 	}
+}
+
+func compactKV(clients []*v3.Client) {
+	var curRev int64
+	for _, c := range clients {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		resp, err := c.KV.Get(ctx, "foo")
+		cancel()
+		if err != nil {
+			panic(err)
+		}
+		curRev = resp.Header.Revision
+		break
+	}
+	revToCompact := max(0, curRev-compactIndexDelta)
+	for _, c := range clients {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := c.KV.Compact(ctx, revToCompact)
+		cancel()
+		if err != nil {
+			panic(err)
+		}
+		break
+	}
+}
+
+func max(n1, n2 int64) int64 {
+	if n1 > n2 {
+		return n1
+	}
+	return n2
 }

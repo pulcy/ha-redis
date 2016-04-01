@@ -17,9 +17,9 @@ package clientv3
 import (
 	"sync"
 
-	"github.com/coreos/etcd/Godeps/_workspace/src/golang.org/x/net/context"
-	"github.com/coreos/etcd/Godeps/_workspace/src/google.golang.org/grpc"
 	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
+	"golang.org/x/net/context"
+	"google.golang.org/grpc"
 )
 
 type (
@@ -73,7 +73,7 @@ func (c *cluster) MemberAdd(ctx context.Context, peerAddrs []string) (*MemberAdd
 		return (*MemberAddResponse)(resp), nil
 	}
 
-	if isRPCError(err) {
+	if isHalted(ctx, err) {
 		return nil, err
 	}
 
@@ -88,7 +88,7 @@ func (c *cluster) MemberRemove(ctx context.Context, id uint64) (*MemberRemoveRes
 		return (*MemberRemoveResponse)(resp), nil
 	}
 
-	if isRPCError(err) {
+	if isHalted(ctx, err) {
 		return nil, err
 	}
 
@@ -105,7 +105,7 @@ func (c *cluster) MemberUpdate(ctx context.Context, id uint64, peerAddrs []strin
 			return (*MemberUpdateResponse)(resp), nil
 		}
 
-		if isRPCError(err) {
+		if isHalted(ctx, err) {
 			return nil, err
 		}
 
@@ -124,7 +124,7 @@ func (c *cluster) MemberList(ctx context.Context) (*MemberListResponse, error) {
 			return (*MemberListResponse)(resp), nil
 		}
 
-		if isRPCError(err) {
+		if isHalted(ctx, err) {
 			return nil, err
 		}
 

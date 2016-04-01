@@ -17,8 +17,8 @@ package clientv3
 import (
 	"sync"
 
-	"github.com/coreos/etcd/Godeps/_workspace/src/golang.org/x/net/context"
 	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
+	"golang.org/x/net/context"
 )
 
 //
@@ -144,7 +144,7 @@ func (txn *txn) Commit() (*TxnResponse, error) {
 			return (*TxnResponse)(resp), nil
 		}
 
-		if isRPCError(err) {
+		if isHalted(txn.ctx, err) {
 			return nil, err
 		}
 

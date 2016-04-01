@@ -333,8 +333,12 @@ func (t *Transport) newTLSConfig(host string) *tls.Config {
 	if t.TLSClientConfig != nil {
 		*cfg = *t.TLSClientConfig
 	}
-	cfg.NextProtos = []string{NextProtoTLS} // TODO: don't override if already in list
-	cfg.ServerName = host
+	if !strSliceContains(cfg.NextProtos, NextProtoTLS) {
+		cfg.NextProtos = append([]string{NextProtoTLS}, cfg.NextProtos...)
+	}
+	if cfg.ServerName == "" {
+		cfg.ServerName = host
+	}
 	return cfg
 }
 
@@ -414,8 +418,8 @@ func (t *Transport) NewClientConn(c net.Conn) (*ClientConn, error) {
 	}
 
 	initialSettings := []Setting{
-		Setting{ID: SettingEnablePush, Val: 0},
-		Setting{ID: SettingInitialWindowSize, Val: transportDefaultStreamFlow},
+		{ID: SettingEnablePush, Val: 0},
+		{ID: SettingInitialWindowSize, Val: transportDefaultStreamFlow},
 	}
 	if max := t.maxHeaderListSize(); max != 0 {
 		initialSettings = append(initialSettings, Setting{ID: SettingMaxHeaderListSize, Val: max})
@@ -1259,7 +1263,8 @@ func (rl *clientConnReadLoop) handleResponse(cs *clientStream, f *MetaHeadersFra
 	}
 
 	streamEnded := f.StreamEnded()
-	if !streamEnded || cs.req.Method == "HEAD" {
+	isHead := cs.req.Method == "HEAD"
+	if !streamEnded || isHead {
 		res.ContentLength = -1
 		if clens := res.Header["Content-Length"]; len(clens) == 1 {
 			if clen64, err := strconv.ParseInt(clens[0], 10, 64); err == nil {
@@ -1274,7 +1279,7 @@ func (rl *clientConnReadLoop) handleResponse(cs *clientStream, f *MetaHeadersFra
 		}
 	}
 
-	if streamEnded {
+	if streamEnded || isHead {
 		res.Body = noBody
 		return res, nil
 	}

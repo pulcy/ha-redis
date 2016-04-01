@@ -69,7 +69,7 @@ var (
 
 	ErrConflictBootstrapFlags = fmt.Errorf("multiple discovery or bootstrap flags are set. " +
 		"Choose one of \"initial-cluster\", \"discovery\" or \"discovery-srv\"")
-	errUnsetAdvertiseClientURLsFlag = fmt.Errorf("-advertise-client-urls is required when -listen-client-urls is set explicitly")
+	errUnsetAdvertiseClientURLsFlag = fmt.Errorf("-advertise-client-urls is required when --listen-client-urls is set explicitly")
 )
 
 type config struct {
@@ -111,6 +111,7 @@ type config struct {
 
 	// security
 	clientTLSInfo, peerTLSInfo transport.TLSInfo
+	peerAutoTLS                bool
 
 	// logging
 	debug        bool
@@ -121,8 +122,8 @@ type config struct {
 
 	printVersion bool
 
-	v3demo   bool
-	gRPCAddr string
+	autoCompactionRetention int
+	quotaBackendBytes       int64
 
 	enablePprof bool
 
@@ -210,6 +211,7 @@ func NewConfig() *config {
 	fs.StringVar(&cfg.peerTLSInfo.KeyFile, "peer-key-file", "", "Path to the peer server TLS key file.")
 	fs.BoolVar(&cfg.peerTLSInfo.ClientCertAuth, "peer-client-cert-auth", false, "Enable peer client cert authentication.")
 	fs.StringVar(&cfg.peerTLSInfo.TrustedCAFile, "peer-trusted-ca-file", "", "Path to the peer server TLS trusted CA file.")
+	fs.BoolVar(&cfg.peerAutoTLS, "peer-auto-tls", false, "Peer TLS using generated certificates")
 
 	// logging
 	fs.BoolVar(&cfg.debug, "debug", false, "Enable debug-level logging for etcd.")
@@ -222,16 +224,16 @@ func NewConfig() *config {
 	fs.BoolVar(&cfg.printVersion, "version", false, "Print the version and exit.")
 
 	// demo flag
-	fs.BoolVar(&cfg.v3demo, "experimental-v3demo", false, "Enable experimental v3 demo API.")
-	fs.StringVar(&cfg.gRPCAddr, "experimental-gRPC-addr", "127.0.0.1:2378", "gRPC address for experimental v3 demo API.")
+	fs.IntVar(&cfg.autoCompactionRetention, "experimental-auto-compaction-retention", 0, "Auto compaction retention in hour. 0 means disable auto compaction.")
+	fs.Int64Var(&cfg.quotaBackendBytes, "quota-backend-bytes", 0, "Raise alarms when backend size exceeds the given quota. 0 means use the default quota.")
 
 	// backwards-compatibility with v0.4.6
-	fs.Var(&flags.IPAddressPort{}, "addr", "DEPRECATED: Use -advertise-client-urls instead.")
-	fs.Var(&flags.IPAddressPort{}, "bind-addr", "DEPRECATED: Use -listen-client-urls instead.")
-	fs.Var(&flags.IPAddressPort{}, "peer-addr", "DEPRECATED: Use -initial-advertise-peer-urls instead.")
-	fs.Var(&flags.IPAddressPort{}, "peer-bind-addr", "DEPRECATED: Use -listen-peer-urls instead.")
-	fs.Var(&flags.DeprecatedFlag{Name: "peers"}, "peers", "DEPRECATED: Use -initial-cluster instead.")
-	fs.Var(&flags.DeprecatedFlag{Name: "peers-file"}, "peers-file", "DEPRECATED: Use -initial-cluster instead.")
+	fs.Var(&flags.IPAddressPort{}, "addr", "DEPRECATED: Use --advertise-client-urls instead.")
+	fs.Var(&flags.IPAddressPort{}, "bind-addr", "DEPRECATED: Use --listen-client-urls instead.")
+	fs.Var(&flags.IPAddressPort{}, "peer-addr", "DEPRECATED: Use --initial-advertise-peer-urls instead.")
+	fs.Var(&flags.IPAddressPort{}, "peer-bind-addr", "DEPRECATED: Use --listen-peer-urls instead.")
+	fs.Var(&flags.DeprecatedFlag{Name: "peers"}, "peers", "DEPRECATED: Use --initial-cluster instead.")
+	fs.Var(&flags.DeprecatedFlag{Name: "peers-file"}, "peers-file", "DEPRECATED: Use --initial-cluster instead.")
 
 	// pprof profiler via HTTP
 	fs.BoolVar(&cfg.enablePprof, "enable-pprof", false, "Enable runtime profiling data via HTTP server. Address is at client URL + \"/debug/pprof\"")
@@ -265,7 +267,7 @@ func (cfg *config) Parse(arguments []string) error {
 		os.Exit(0)
 	}
 
-	err := flags.SetFlagsFromEnv(cfg.FlagSet)
+	err := flags.SetFlagsFromEnv("ETCD", cfg.FlagSet)
 	if err != nil {
 		plog.Fatalf("%v", err)
 	}
@@ -304,7 +306,7 @@ func (cfg *config) Parse(arguments []string) error {
 		return err
 	}
 
-	// when etcd runs in member mode user needs to set -advertise-client-urls if -listen-client-urls is set.
+	// when etcd runs in member mode user needs to set --advertise-client-urls if --listen-client-urls is set.
 	// TODO(yichengq): check this for joining through discovery service case
 	mayFallbackToProxy := flags.IsSet(cfg.FlagSet, "discovery") && cfg.fallback.String() == fallbackFlagProxy
 	mayBeProxy := cfg.proxy.String() != proxyFlagOff || mayFallbackToProxy
@@ -315,10 +317,10 @@ func (cfg *config) Parse(arguments []string) error {
 	}
 
 	if 5*cfg.TickMs > cfg.ElectionMs {
-		return fmt.Errorf("-election-timeout[%vms] should be at least as 5 times as -heartbeat-interval[%vms]", cfg.ElectionMs, cfg.TickMs)
+		return fmt.Errorf("--election-timeout[%vms] should be at least as 5 times as --heartbeat-interval[%vms]", cfg.ElectionMs, cfg.TickMs)
 	}
 	if cfg.ElectionMs > maxElectionMs {
-		return fmt.Errorf("-election-timeout[%vms] is too long, and should be set less than %vms", cfg.ElectionMs, maxElectionMs)
+		return fmt.Errorf("--election-timeout[%vms] is too long, and should be set less than %vms", cfg.ElectionMs, maxElectionMs)
 	}
 
 	return nil

@@ -16,6 +16,8 @@ package v3rpc
 
 import (
 	"io"
+	"sync"
+	"time"
 
 	"github.com/coreos/etcd/etcdserver"
 	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
@@ -39,6 +41,13 @@ func NewWatchServer(s *etcdserver.EtcdServer) pb.WatchServer {
 	}
 }
 
+var (
+	// expose for testing purpose. External test can change this to a
+	// small value to finish fast. The type is int32 instead of time.Duration
+	// in order to placate the race detector by setting the value with atomic stores.
+	ProgressReportIntervalMilliseconds = int32(10 * 60 * 1000) // 10 minutes
+)
+
 const (
 	// We send ctrl response inside the read loop. We do not want
 	// send to block read, but we still want ctrl response we sent to
@@ -61,6 +70,12 @@ type serverWatchStream struct {
 	watchStream storage.WatchStream
 	ctrlStream  chan *pb.WatchResponse
 
+	// progress tracks the watchID that stream might need to send
+	// progress to.
+	progress map[storage.WatchID]bool
+	// mu protects progress
+	mu sync.Mutex
+
 	// closec indicates the stream is closed.
 	closec chan struct{}
 }
@@ -74,6 +89,7 @@ func (ws *watchServer) Watch(stream pb.Watch_WatchServer) error {
 		watchStream: ws.watchable.NewWatchStream(),
 		// chan for sending control response like watcher created and canceled.
 		ctrlStream: make(chan *pb.WatchResponse, ctrlStreamBufLen),
+		progress:   make(map[storage.WatchID]bool),
 		closec:     make(chan struct{}),
 	}
 	defer sws.close()
@@ -94,34 +110,33 @@ func (sws *serverWatchStream) recvLoop() error {
 
 		switch uv := req.RequestUnion.(type) {
 		case *pb.WatchRequest_CreateRequest:
-			if uv.CreateRequest != nil {
-				creq := uv.CreateRequest
-				var prefix bool
-				toWatch := creq.Key
-				if len(creq.Key) == 0 {
-					toWatch = creq.Prefix
-					prefix = true
-				}
+			if uv.CreateRequest == nil {
+				break
+			}
 
-				rev := creq.StartRevision
-				wsrev := sws.watchStream.Rev()
-				if rev == 0 {
-					// rev 0 watches past the current revision
-					rev = wsrev + 1
-				} else if rev > wsrev { // do not allow watching future revision.
-					sws.ctrlStream <- &pb.WatchResponse{
-						Header:   sws.newResponseHeader(wsrev),
-						Created:  true,
-						Canceled: true,
-					}
-					continue
-				}
-				id := sws.watchStream.Watch(toWatch, prefix, rev)
-				sws.ctrlStream <- &pb.WatchResponse{
-					Header:  sws.newResponseHeader(wsrev),
-					WatchId: int64(id),
-					Created: true,
-				}
+			creq := uv.CreateRequest
+			if len(creq.Key) == 0 {
+				// \x00 is the smallest key
+				creq.Key = []byte{0}
+			}
+			if len(creq.RangeEnd) == 1 && creq.RangeEnd[0] == 0 {
+				// support  >= key queries
+				creq.RangeEnd = []byte{}
+			}
+			wsrev := sws.watchStream.Rev()
+			rev := creq.StartRevision
+			if rev == 0 {
+				rev = wsrev + 1
+			}
+			id := sws.watchStream.Watch(creq.Key, creq.RangeEnd, rev)
+			if id != -1 && creq.ProgressNotify {
+				sws.progress[id] = true
+			}
+			sws.ctrlStream <- &pb.WatchResponse{
+				Header:   sws.newResponseHeader(wsrev),
+				WatchId:  int64(id),
+				Created:  true,
+				Canceled: id == -1,
 			}
 		case *pb.WatchRequest_CancelRequest:
 			if uv.CancelRequest != nil {
@@ -133,6 +148,9 @@ func (sws *serverWatchStream) recvLoop() error {
 						WatchId:  id,
 						Canceled: true,
 					}
+					sws.mu.Lock()
+					delete(sws.progress, storage.WatchID(id))
+					sws.mu.Unlock()
 				}
 			}
 			// TODO: do we need to return error back to client?
@@ -147,6 +165,10 @@ func (sws *serverWatchStream) sendLoop() {
 	ids := make(map[storage.WatchID]struct{})
 	// watch responses pending on a watch id creation message
 	pending := make(map[storage.WatchID][]*pb.WatchResponse)
+
+	interval := time.Duration(ProgressReportIntervalMilliseconds) * time.Millisecond
+	progressTicker := time.NewTicker(interval)
+	defer progressTicker.Stop()
 
 	for {
 		select {
@@ -183,6 +205,12 @@ func (sws *serverWatchStream) sendLoop() {
 				return
 			}
 
+			sws.mu.Lock()
+			if _, ok := sws.progress[wresp.WatchID]; ok {
+				sws.progress[wresp.WatchID] = false
+			}
+			sws.mu.Unlock()
+
 		case c, ok := <-sws.ctrlStream:
 			if !ok {
 				return
@@ -208,6 +236,13 @@ func (sws *serverWatchStream) sendLoop() {
 					}
 				}
 				delete(pending, wid)
+			}
+		case <-progressTicker.C:
+			for id, ok := range sws.progress {
+				if ok {
+					sws.watchStream.RequestProgress(id)
+				}
+				sws.progress[id] = true
 			}
 		case <-sws.closec:
 			// drain the chan to clean up pending events

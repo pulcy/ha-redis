@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package mirror implements etcd mirroring operations.
 package mirror
 
 import (
-	"github.com/coreos/etcd/Godeps/_workspace/src/golang.org/x/net/context"
 	"github.com/coreos/etcd/clientv3"
+	"golang.org/x/net/context"
 )
 
 const (
@@ -48,10 +49,9 @@ func (s *syncer) SyncBase(ctx context.Context) (<-chan clientv3.GetResponse, cha
 	respchan := make(chan clientv3.GetResponse, 1024)
 	errchan := make(chan error, 1)
 
-	kapi := clientv3.NewKV(s.c)
 	// if rev is not specified, we will choose the most recent revision.
 	if s.rev == 0 {
-		resp, err := kapi.Get(ctx, "foo")
+		resp, err := s.c.Get(ctx, "foo")
 		if err != nil {
 			errchan <- err
 			close(respchan)
@@ -83,7 +83,7 @@ func (s *syncer) SyncBase(ctx context.Context) (<-chan clientv3.GetResponse, cha
 		}
 
 		for {
-			resp, err := kapi.Get(ctx, key, opts...)
+			resp, err := s.c.Get(ctx, key, opts...)
 			if err != nil {
 				errchan <- err
 				return
@@ -106,21 +106,5 @@ func (s *syncer) SyncUpdates(ctx context.Context) clientv3.WatchChan {
 	if s.rev == 0 {
 		panic("unexpected revision = 0. Calling SyncUpdates before SyncBase finishes?")
 	}
-
-	respchan := make(chan clientv3.WatchResponse, 1024)
-
-	go func() {
-		wapi := clientv3.NewWatcher(s.c)
-		defer wapi.Close()
-		defer close(respchan)
-
-		// get all events since revision (or get non-compacted revision, if
-		// rev is too far behind)
-		wch := wapi.Watch(ctx, s.prefix, clientv3.WithPrefix(), clientv3.WithRev(s.rev))
-		for wr := range wch {
-			respchan <- wr
-		}
-	}()
-
-	return respchan
+	return s.c.Watch(ctx, s.prefix, clientv3.WithPrefix(), clientv3.WithRev(s.rev+1))
 }

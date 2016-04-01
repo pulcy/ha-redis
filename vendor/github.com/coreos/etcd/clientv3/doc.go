@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// clientv3 is the official Go etcd client for v3.
+// Package clientv3 implements the official Go etcd client for v3.
 //
 // Create client using `clientv3.New`:
 //
 //	cli, err := clientv3.New(clientv3.Config{
-//		Endpoints:   []string{"localhost:12378", "localhost:22378", "localhost:32378"},
+//		Endpoints:   []string{"localhost:2379", "localhost:22379", "localhost:32379"},
 //		DialTimeout: 5 * time.Second,
 //	})
 //	if err != nil {
@@ -38,6 +38,27 @@
 //	}
 //	// use the response
 //
-//	TODO: document error handling
+// The Client has internal state (watchers and leases), so Clients should be reused instead of created as needed.
+// Clients are safe for concurrent use by multiple goroutines.
+//
+// etcd client returns 2 types of errors:
+//
+//	1. context error: canceled or deadline exceeded.
+//	2. gRPC error: see https://github.com/coreos/etcd/blob/master/etcdserver/api/v3rpc/error.go.
+//
+// Here is the example code to handle client errors:
+//
+//	resp, err := kvc.Put(ctx, "", "")
+//	if err != nil {
+//		if err == context.Canceled {
+//			// ctx is canceled by another routine
+//		} else if err == context.DeadlineExceeded {
+//			// ctx is attached with a deadline and it exceeded
+//		} else if verr, ok := err.(*v3rpc.ErrEmptyKey); ok {
+//			// process (verr.Errors)
+//		} else {
+//			// bad cluster endpoints, which are not etcd servers
+//		}
+//	}
 //
 package clientv3

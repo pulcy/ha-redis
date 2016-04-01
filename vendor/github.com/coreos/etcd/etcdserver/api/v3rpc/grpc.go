@@ -11,30 +11,30 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
 package v3rpc
 
 import (
-	"github.com/coreos/etcd/Godeps/_workspace/src/google.golang.org/grpc"
-	"github.com/coreos/etcd/Godeps/_workspace/src/google.golang.org/grpc/credentials"
+	"crypto/tls"
+
 	"github.com/coreos/etcd/etcdserver"
 	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
-	"github.com/coreos/etcd/pkg/transport"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
-func Server(s *etcdserver.EtcdServer, tls *transport.TLSInfo) (*grpc.Server, error) {
+func Server(s *etcdserver.EtcdServer, tls *tls.Config) *grpc.Server {
 	var opts []grpc.ServerOption
 	if tls != nil {
-		creds, err := credentials.NewServerTLSFromFile(tls.CertFile, tls.KeyFile)
-		if err != nil {
-			return nil, err
-		}
-		opts = append(opts, grpc.Creds(creds))
+		opts = append(opts, grpc.Creds(credentials.NewTLS(tls)))
 	}
 
 	grpcServer := grpc.NewServer(opts...)
-	pb.RegisterKVServer(grpcServer, NewKVServer(s))
+	pb.RegisterKVServer(grpcServer, NewQuotaKVServer(s))
 	pb.RegisterWatchServer(grpcServer, NewWatchServer(s))
-	pb.RegisterLeaseServer(grpcServer, NewLeaseServer(s))
+	pb.RegisterLeaseServer(grpcServer, NewQuotaLeaseServer(s))
 	pb.RegisterClusterServer(grpcServer, NewClusterServer(s))
-	return grpcServer, nil
+	pb.RegisterAuthServer(grpcServer, NewAuthServer(s))
+	pb.RegisterMaintenanceServer(grpcServer, NewMaintenanceServer(s))
+	return grpcServer
 }

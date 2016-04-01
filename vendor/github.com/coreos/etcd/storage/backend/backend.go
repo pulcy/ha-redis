@@ -22,20 +22,32 @@ import (
 	"log"
 	"os"
 	"path"
+	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/coreos/etcd/Godeps/_workspace/src/github.com/boltdb/bolt"
+	"github.com/boltdb/bolt"
 )
 
 var (
 	defaultBatchLimit    = 10000
 	defaultBatchInterval = 100 * time.Millisecond
 
+	defragLimit = 10000
+
 	// InitialMmapSize is the initial size of the mmapped region. Setting this larger than
 	// the potential max db size can prevent writer from blocking reader.
 	// This only works for linux.
-	InitialMmapSize = 10 * 1024 * 1024 * 1024
+	InitialMmapSize = int64(10 * 1024 * 1024 * 1024)
+)
+
+const (
+	// DefaultQuotaBytes is the number of bytes the backend Size may
+	// consume before exceeding the space quota.
+	DefaultQuotaBytes = int64(2 * 1024 * 1024 * 1024) // 2GB
+	// MaxQuotaBytes is the maximum number of bytes suggested for a backend
+	// quota. A larger quota may lead to degraded performance.
+	MaxQuotaBytes = int64(8 * 1024 * 1024 * 1024) // 8GB
 )
 
 type Backend interface {
@@ -44,6 +56,7 @@ type Backend interface {
 	Hash() (uint32, error)
 	// Size returns the current size of the backend.
 	Size() int64
+	Defrag() error
 	ForceCommit()
 	Close() error
 }
@@ -58,15 +71,20 @@ type Snapshot interface {
 }
 
 type backend struct {
+	// size and commits are used with atomic operations so they must be
+	// 64-bit aligned, otherwise 32-bit tests will crash
+
+	// size is the number of bytes in the backend
+	size int64
+	// commits counts number of commits since start
+	commits int64
+
+	mu sync.RWMutex
 	db *bolt.DB
 
 	batchInterval time.Duration
 	batchLimit    int
 	batchTx       *batchTx
-	size          int64
-
-	// number of commits since start
-	commits int64
 
 	stopc chan struct{}
 	donec chan struct{}
@@ -114,9 +132,12 @@ func (b *backend) ForceCommit() {
 
 func (b *backend) Snapshot() Snapshot {
 	b.batchTx.Commit()
+
+	b.mu.RLock()
+	defer b.mu.RUnlock()
 	tx, err := b.db.Begin(false)
 	if err != nil {
-		log.Fatalf("storage: cannot begin tx (%s)", err)
+		log.Fatalf("backend: cannot begin tx (%s)", err)
 	}
 	return &snapshot{tx}
 }
@@ -124,6 +145,8 @@ func (b *backend) Snapshot() Snapshot {
 func (b *backend) Hash() (uint32, error) {
 	h := crc32.New(crc32.MakeTable(crc32.Castagnoli))
 
+	b.mu.RLock()
+	defer b.mu.RUnlock()
 	err := b.db.View(func(tx *bolt.Tx) error {
 		c := tx.Cursor()
 		for next, _ := c.First(); next != nil; next, _ = c.Next() {
@@ -175,6 +198,113 @@ func (b *backend) Close() error {
 // Commits returns total number of commits since start
 func (b *backend) Commits() int64 {
 	return atomic.LoadInt64(&b.commits)
+}
+
+func (b *backend) Defrag() error {
+	// TODO: make this non-blocking?
+	// lock batchTx to ensure nobody is using previous tx, and then
+	// close previous ongoing tx.
+	b.batchTx.Lock()
+	defer b.batchTx.Unlock()
+
+	// lock database after lock tx to avoid deadlock.
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.batchTx.commit(true)
+	b.batchTx.tx = nil
+
+	tmpdb, err := bolt.Open(b.db.Path()+".tmp", 0600, boltOpenOptions)
+	if err != nil {
+		return err
+	}
+
+	err = defragdb(b.db, tmpdb, defragLimit)
+
+	if err != nil {
+		tmpdb.Close()
+		os.RemoveAll(tmpdb.Path())
+		return err
+	}
+
+	dbp := b.db.Path()
+	tdbp := tmpdb.Path()
+
+	err = b.db.Close()
+	if err != nil {
+		log.Fatalf("backend: cannot close database (%s)", err)
+	}
+	err = tmpdb.Close()
+	if err != nil {
+		log.Fatalf("backend: cannot close database (%s)", err)
+	}
+	err = os.Rename(tdbp, dbp)
+	if err != nil {
+		log.Fatalf("backend: cannot rename database (%s)", err)
+	}
+
+	b.db, err = bolt.Open(dbp, 0600, boltOpenOptions)
+	if err != nil {
+		log.Panicf("backend: cannot open database at %s (%v)", dbp, err)
+	}
+	b.batchTx.tx, err = b.db.Begin(true)
+	if err != nil {
+		log.Fatalf("backend: cannot begin tx (%s)", err)
+	}
+
+	return nil
+}
+
+func defragdb(odb, tmpdb *bolt.DB, limit int) error {
+	// open a tx on tmpdb for writes
+	tmptx, err := tmpdb.Begin(true)
+	if err != nil {
+		return err
+	}
+
+	// open a tx on old db for read
+	tx, err := odb.Begin(false)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	c := tx.Cursor()
+
+	count := 0
+	for next, _ := c.First(); next != nil; next, _ = c.Next() {
+		b := tx.Bucket(next)
+		if b == nil {
+			return fmt.Errorf("backend: cannot defrag bucket %s", string(next))
+		}
+
+		tmpb, berr := tmptx.CreateBucketIfNotExists(next)
+		if berr != nil {
+			return berr
+		}
+
+		b.ForEach(func(k, v []byte) error {
+			count++
+			if count > limit {
+				err = tmptx.Commit()
+				if err != nil {
+					return err
+				}
+				tmptx, err = tmpdb.Begin(true)
+				if err != nil {
+					return err
+				}
+				tmpb = tmptx.Bucket(next)
+			}
+			err = tmpb.Put(k, v)
+			if err != nil {
+				return err
+			}
+			return nil
+		})
+	}
+
+	return tmptx.Commit()
 }
 
 // NewTmpBackend creates a backend implementation for testing.

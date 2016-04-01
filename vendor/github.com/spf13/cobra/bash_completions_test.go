@@ -25,7 +25,7 @@ func check(t *testing.T, found, expected string) {
 
 // World worst custom function, just keep telling you to enter hello!
 const (
-	bash_completion_func = `__custom_func() {
+	bashCompletionFunc = `__custom_func() {
 COMPREPLY=( "hello" )
 }
 `
@@ -37,7 +37,7 @@ func TestBashCompletions(t *testing.T) {
 	c.AddCommand(cmdEcho, cmdPrint, cmdDeprecated, cmdColon)
 
 	// custom completion function
-	c.BashCompletionFunction = bash_completion_func
+	c.BashCompletionFunction = bashCompletionFunc
 
 	// required flag
 	c.MarkFlagRequired("introot")
@@ -61,6 +61,11 @@ func TestBashCompletions(t *testing.T) {
 	var flagvalExt string
 	c.Flags().StringVar(&flagvalExt, "filename-ext", "", "Enter a filename (extension limited)")
 	c.MarkFlagFilename("filename-ext")
+
+	// filename extensions
+	var flagvalCustom string
+	c.Flags().StringVar(&flagvalCustom, "custom", "", "Enter a filename (extension limited)")
+	c.MarkFlagCustom("custom", "__complete_custom")
 
 	// subdirectories in a given directory
 	var flagvalTheme string
@@ -88,6 +93,8 @@ func TestBashCompletions(t *testing.T) {
 	check(t, str, `flags_completion+=("_filedir")`)
 	// check for filename extension flags
 	check(t, str, `flags_completion+=("__handle_filename_extension_flag json|yaml|yml")`)
+	// check for custom flags
+	check(t, str, `flags_completion+=("__complete_custom")`)
 	// check for subdirs_in_dir flags
 	check(t, str, `flags_completion+=("__handle_subdirs_in_dir_flag themes")`)
 

@@ -20,14 +20,14 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/coreos/etcd/Godeps/_workspace/src/github.com/google/btree"
+	"github.com/google/btree"
 )
 
 var (
 	ErrRevisionNotFound = errors.New("stroage: revision not found")
 )
 
-// keyIndex stores the revision of an key in the backend.
+// keyIndex stores the revisions of a key in the backend.
 // Each keyIndex has at least one key generation.
 // Each generation might have several key versions.
 // Tombstone on a key appends an tombstone version at the end
@@ -146,7 +146,7 @@ func (ki *keyIndex) get(atRev int64) (modified, created revision, ver int64, err
 	return revision{}, revision{}, 0, ErrRevisionNotFound
 }
 
-// since returns revisions since the give rev. Only the revision with the
+// since returns revisions since the given rev. Only the revision with the
 // largest sub revision will be returned if multiple revisions have the same
 // main revision.
 func (ki *keyIndex) since(rev int64) []revision {

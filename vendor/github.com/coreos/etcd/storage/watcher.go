@@ -29,19 +29,26 @@ type WatchID int64
 
 type WatchStream interface {
 	// Watch creates a watcher. The watcher watches the events happening or
-	// happened on the given key or key prefix from the given startRev.
+	// happened on the given key or range [key, end) from the given startRev.
 	//
 	// The whole event history can be watched unless compacted.
-	// If `prefix` is true, watch observes all events whose key prefix could be the given `key`.
 	// If `startRev` <=0, watch observes events after currentRev.
 	//
 	// The returned `id` is the ID of this watcher. It appears as WatchID
 	// in events that are sent to the created watcher through stream channel.
 	//
-	Watch(key []byte, prefix bool, startRev int64) WatchID
+	Watch(key, end []byte, startRev int64) WatchID
 
 	// Chan returns a chan. All watch response will be sent to the returned chan.
 	Chan() <-chan WatchResponse
+
+	// RequestProgress requests the progress of the watcher with given ID. The response
+	// will only be sent if the watcher is currently synced.
+	// The responses will be sent through the WatchRespone Chan attached
+	// with this stream to ensure correct ordering.
+	// The responses contains no events. The revision in the response is the progress
+	// of the watchers since the watcher is currently synced.
+	RequestProgress(id WatchID)
 
 	// Cancel cancels a watcher by giving its ID. If watcher does not exist, an error will be
 	// returned.
@@ -80,14 +87,15 @@ type watchStream struct {
 
 	mu sync.Mutex // guards fields below it
 	// nextID is the ID pre-allocated for next new watcher in this stream
-	nextID  WatchID
-	closed  bool
-	cancels map[WatchID]cancelFunc
+	nextID   WatchID
+	closed   bool
+	cancels  map[WatchID]cancelFunc
+	watchers map[WatchID]*watcher
 }
 
 // Watch creates a new watcher in the stream and returns its WatchID.
 // TODO: return error if ws is closed?
-func (ws *watchStream) Watch(key []byte, prefix bool, startRev int64) WatchID {
+func (ws *watchStream) Watch(key, end []byte, startRev int64) WatchID {
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 	if ws.closed {
@@ -97,9 +105,10 @@ func (ws *watchStream) Watch(key []byte, prefix bool, startRev int64) WatchID {
 	id := ws.nextID
 	ws.nextID++
 
-	_, c := ws.watchable.watch(key, prefix, startRev, id, ws.ch)
+	w, c := ws.watchable.watch(key, end, startRev, id, ws.ch)
 
 	ws.cancels[id] = c
+	ws.watchers[id] = w
 	return id
 }
 
@@ -114,6 +123,7 @@ func (ws *watchStream) Cancel(id WatchID) error {
 	}
 	cancel()
 	delete(ws.cancels, id)
+	delete(ws.watchers, id)
 	return nil
 }
 
@@ -133,4 +143,14 @@ func (ws *watchStream) Rev() int64 {
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 	return ws.watchable.rev()
+}
+
+func (ws *watchStream) RequestProgress(id WatchID) {
+	ws.mu.Lock()
+	w, ok := ws.watchers[id]
+	ws.mu.Unlock()
+	if !ok {
+		return
+	}
+	ws.watchable.progress(w)
 }

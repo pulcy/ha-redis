@@ -18,7 +18,6 @@ import (
 	"crypto/rand"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/coreos/etcd/clientv3"
 )
@@ -30,19 +29,19 @@ var (
 )
 
 func mustCreateConn() *clientv3.Client {
-	eps := strings.Split(endpoints, ",")
-	endpoint := eps[dialTotal%len(eps)]
+	endpoint := endpoints[dialTotal%len(endpoints)]
 	dialTotal++
-	cfgtls := &tls
-	if cfgtls.Empty() {
-		cfgtls = nil
+	cfg := clientv3.Config{Endpoints: []string{endpoint}}
+	if !tls.Empty() {
+		cfgtls, err := tls.ClientConfig()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bad tls config: %v\n", err)
+			os.Exit(1)
+		}
+		cfg.TLS = cfgtls
 	}
-	client, err := clientv3.New(
-		clientv3.Config{
-			Endpoints: []string{endpoint},
-			TLS:       cfgtls,
-		},
-	)
+
+	client, err := clientv3.New(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dial error: %v\n", err)
 		os.Exit(1)

@@ -16,7 +16,6 @@ package etcdserver
 
 import (
 	"encoding/json"
-	"errors"
 	"expvar"
 	"fmt"
 	"math/rand"
@@ -24,12 +23,13 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/coreos/etcd/Godeps/_workspace/src/github.com/coreos/go-semver/semver"
-	"github.com/coreos/etcd/Godeps/_workspace/src/github.com/coreos/pkg/capnslog"
-	"github.com/coreos/etcd/Godeps/_workspace/src/golang.org/x/net/context"
+	"github.com/coreos/etcd/alarm"
+	"github.com/coreos/etcd/auth"
+	"github.com/coreos/etcd/compactor"
 	"github.com/coreos/etcd/discovery"
 	"github.com/coreos/etcd/etcdserver/etcdhttp/httptypes"
 	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
@@ -40,7 +40,6 @@ import (
 	"github.com/coreos/etcd/pkg/pbutil"
 	"github.com/coreos/etcd/pkg/runtime"
 	"github.com/coreos/etcd/pkg/schedule"
-	"github.com/coreos/etcd/pkg/timeutil"
 	"github.com/coreos/etcd/pkg/types"
 	"github.com/coreos/etcd/pkg/wait"
 	"github.com/coreos/etcd/raft"
@@ -52,6 +51,9 @@ import (
 	"github.com/coreos/etcd/store"
 	"github.com/coreos/etcd/version"
 	"github.com/coreos/etcd/wal"
+	"github.com/coreos/go-semver/semver"
+	"github.com/coreos/pkg/capnslog"
+	"golang.org/x/net/context"
 )
 
 const (
@@ -171,14 +173,20 @@ type EtcdServer struct {
 
 	store store.Store
 
-	kv     dstorage.ConsistentWatchableKV
-	lessor lease.Lessor
-	be     backend.Backend
+	applyV3    applierV3
+	kv         dstorage.ConsistentWatchableKV
+	lessor     lease.Lessor
+	bemu       sync.Mutex
+	be         backend.Backend
+	authStore  auth.AuthStore
+	alarmStore *alarm.AlarmStore
 
 	stats  *stats.ServerStats
 	lstats *stats.LeaderStats
 
 	SyncTicker <-chan time.Time
+	// compactor is used to auto-compact the KV.
+	compactor *compactor.Periodic
 
 	// consistent index used to hold the offset of current executing entry
 	// It is initialized to 0 before executing any entry.
@@ -213,10 +221,6 @@ func NewServer(cfg *ServerConfig) (*EtcdServer, error) {
 
 	if terr := fileutil.TouchDirAll(cfg.DataDir); terr != nil {
 		return nil, fmt.Errorf("cannot access data directory: %v", terr)
-	}
-
-	if !cfg.V3demo && fileutil.Exist(path.Join(cfg.SnapDir(), databaseFilename)) {
-		return nil, errors.New("experimental-v3demo cannot be disabled once it is enabled")
 	}
 
 	// Run the migrations.
@@ -364,10 +368,18 @@ func NewServer(cfg *ServerConfig) (*EtcdServer, error) {
 		msgSnapC:      make(chan raftpb.Message, maxInFlightMsgSnap),
 	}
 
-	if cfg.V3demo {
-		srv.be = backend.NewDefaultBackend(path.Join(cfg.SnapDir(), databaseFilename))
-		srv.lessor = lease.NewLessor(srv.be)
-		srv.kv = dstorage.New(srv.be, srv.lessor, &srv.consistIndex)
+	srv.be = backend.NewDefaultBackend(path.Join(cfg.SnapDir(), databaseFilename))
+	srv.lessor = lease.NewLessor(srv.be)
+	srv.kv = dstorage.New(srv.be, srv.lessor, &srv.consistIndex)
+	srv.consistIndex.setConsistentIndex(srv.kv.ConsistentIndex())
+	srv.authStore = auth.NewAuthStore(srv.be)
+	if h := cfg.AutoCompactionRetention; h != 0 {
+		srv.compactor = compactor.NewPeriodic(h, srv.kv, srv)
+		srv.compactor.Run()
+	}
+
+	if err := srv.restoreAlarms(); err != nil {
+		return nil, err
 	}
 
 	// TODO: move transport initialization near the definition of remote
@@ -382,7 +394,6 @@ func NewServer(cfg *ServerConfig) (*EtcdServer, error) {
 		ServerStats: sstats,
 		LeaderStats: lstats,
 		ErrorC:      srv.errorc,
-		V3demo:      cfg.V3demo,
 	}
 	if err := tr.Start(); err != nil {
 		return nil, err
@@ -518,6 +529,9 @@ func (s *EtcdServer) run() {
 		if s.be != nil {
 			s.be.Close()
 		}
+		if s.compactor != nil {
+			s.compactor.Stop()
+		}
 		close(s.done)
 	}()
 
@@ -574,36 +588,48 @@ func (s *EtcdServer) applySnapshot(ep *etcdProgress, apply *apply) {
 			apply.snapshot.Metadata.Index, ep.appliedi)
 	}
 
-	if s.cfg.V3demo {
-		snapfn, err := s.r.storage.DBFilePath(apply.snapshot.Metadata.Index)
-		if err != nil {
-			plog.Panicf("get database snapshot file path error: %v", err)
-		}
-
-		fn := path.Join(s.cfg.SnapDir(), databaseFilename)
-		if err := os.Rename(snapfn, fn); err != nil {
-			plog.Panicf("rename snapshot file error: %v", err)
-		}
-
-		// TODO: recover lessor
-
-		newbe := backend.NewDefaultBackend(fn)
-		if err := s.kv.Restore(newbe); err != nil {
-			plog.Panicf("restore KV error: %v", err)
-		}
-
-		// Closing old backend might block until all the txns
-		// on the backend are finished.
-		// We do not want to wait on closing the old backend.
-		oldbe := s.be
-		go func() {
-			if err := oldbe.Close(); err != nil {
-				plog.Panicf("close backend error: %v", err)
-			}
-		}()
-
-		s.be = newbe
+	snapfn, err := s.r.storage.DBFilePath(apply.snapshot.Metadata.Index)
+	if err != nil {
+		plog.Panicf("get database snapshot file path error: %v", err)
 	}
+
+	fn := path.Join(s.cfg.SnapDir(), databaseFilename)
+	if err := os.Rename(snapfn, fn); err != nil {
+		plog.Panicf("rename snapshot file error: %v", err)
+	}
+
+	newbe := backend.NewDefaultBackend(fn)
+	if err := s.kv.Restore(newbe); err != nil {
+		plog.Panicf("restore KV error: %v", err)
+	}
+	s.consistIndex.setConsistentIndex(s.kv.ConsistentIndex())
+
+	// Closing old backend might block until all the txns
+	// on the backend are finished.
+	// We do not want to wait on closing the old backend.
+	s.bemu.Lock()
+	oldbe := s.be
+	go func() {
+		if err := oldbe.Close(); err != nil {
+			plog.Panicf("close backend error: %v", err)
+		}
+	}()
+
+	s.be = newbe
+	s.bemu.Unlock()
+
+	if s.lessor != nil {
+		s.lessor.Recover(newbe, s.kv)
+	}
+
+	if err := s.restoreAlarms(); err != nil {
+		plog.Panicf("restore alarms error: %v", err)
+	}
+
+	if s.authStore != nil {
+		s.authStore.Recover(newbe)
+	}
+
 	if err := s.store.Recovery(apply.snapshot.Data); err != nil {
 		plog.Panicf("recovery store error: %v", err)
 	}
@@ -768,7 +794,7 @@ func (s *EtcdServer) StoreStats() []byte { return s.store.JsonStats() }
 
 func (s *EtcdServer) AddMember(ctx context.Context, memb Member) error {
 	if s.cfg.StrictReconfigCheck && !s.cluster.isReadyToAddNewMember() {
-		// If s.cfg.StrictReconfigCheck is false, it means the option -strict-reconfig-check isn't passed to etcd.
+		// If s.cfg.StrictReconfigCheck is false, it means the option --strict-reconfig-check isn't passed to etcd.
 		// In such a case adding a new member is allowed unconditionally
 		return ErrNotEnoughStartedMembers
 	}
@@ -788,7 +814,7 @@ func (s *EtcdServer) AddMember(ctx context.Context, memb Member) error {
 
 func (s *EtcdServer) RemoveMember(ctx context.Context, id uint64) error {
 	if s.cfg.StrictReconfigCheck && !s.cluster.isReadyToRemoveMember(id) {
-		// If s.cfg.StrictReconfigCheck is false, it means the option -strict-reconfig-check isn't passed to etcd.
+		// If s.cfg.StrictReconfigCheck is false, it means the option --strict-reconfig-check isn't passed to etcd.
 		// In such a case removing a member is allowed unconditionally
 		return ErrNotEnoughStartedMembers
 	}
@@ -909,25 +935,31 @@ func (s *EtcdServer) publish(timeout time.Duration) {
 	}
 }
 
+// TODO: move this function into raft.go
 func (s *EtcdServer) send(ms []raftpb.Message) {
 	for i := range ms {
 		if s.cluster.IsIDRemoved(types.ID(ms[i].To)) {
 			ms[i].To = 0
 		}
 
-		if s.cfg.V3demo {
-			if ms[i].Type == raftpb.MsgSnap {
-				// There are two separate data store when v3 demo is enabled: the store for v2,
-				// and the KV for v3.
-				// The msgSnap only contains the most recent snapshot of store without KV.
-				// So we need to redirect the msgSnap to etcd server main loop for merging in the
-				// current store snapshot and KV snapshot.
-				select {
-				case s.msgSnapC <- ms[i]:
-				default:
-					// drop msgSnap if the inflight chan if full.
-				}
-				ms[i].To = 0
+		if ms[i].Type == raftpb.MsgSnap {
+			// There are two separate data store: the store for v2, and the KV for v3.
+			// The msgSnap only contains the most recent snapshot of store without KV.
+			// So we need to redirect the msgSnap to etcd server main loop for merging in the
+			// current store snapshot and KV snapshot.
+			select {
+			case s.msgSnapC <- ms[i]:
+			default:
+				// drop msgSnap if the inflight chan if full.
+			}
+			ms[i].To = 0
+		}
+		if ms[i].Type == raftpb.MsgHeartbeat {
+			ok, exceed := s.r.td.Observe(ms[i].To)
+			if !ok {
+				// TODO: limit request rate.
+				plog.Warningf("failed to send out heartbeat on time (deadline exceeded for %v)", exceed)
+				plog.Warningf("server is likely overloaded")
 			}
 		}
 	}
@@ -967,8 +999,6 @@ func (s *EtcdServer) apply(es []raftpb.Entry, confState *raftpb.ConfState) (uint
 	var shouldstop bool
 	for i := range es {
 		e := es[i]
-		// set the consistent index of current executing entry
-		s.consistIndex.setConsistentIndex(e.Index)
 		switch e.Type {
 		case raftpb.EntryNormal:
 			// raft state machine may generate noop entry when leader confirmation.
@@ -986,14 +1016,32 @@ func (s *EtcdServer) apply(es []raftpb.Entry, confState *raftpb.ConfState) (uint
 				var r pb.Request
 				pbutil.MustUnmarshal(&r, e.Data)
 				s.w.Trigger(r.ID, s.applyRequest(r))
+			} else if raftReq.V2 != nil {
+				req := raftReq.V2
+				s.w.Trigger(req.ID, s.applyRequest(*req))
 			} else {
-				switch {
-				case raftReq.V2 != nil:
-					req := raftReq.V2
-					s.w.Trigger(req.ID, s.applyRequest(*req))
-				default:
-					s.w.Trigger(raftReq.ID, s.applyV3Request(&raftReq))
+				// do not re-apply applied entries.
+				if e.Index <= s.consistIndex.ConsistentIndex() {
+					break
 				}
+				// set the consistent index of current executing entry
+				s.consistIndex.setConsistentIndex(e.Index)
+				ar := s.applyV3Request(&raftReq)
+				if ar.err != ErrNoSpace || len(s.alarmStore.Get(pb.AlarmType_NOSPACE)) > 0 {
+					s.w.Trigger(raftReq.ID, ar)
+					break
+				}
+				plog.Errorf("applying raft message exceeded backend quota")
+				go func() {
+					a := &pb.AlarmRequest{
+						MemberID: uint64(s.ID()),
+						Action:   pb.AlarmRequest_ACTIVATE,
+						Alarm:    pb.AlarmType_NOSPACE,
+					}
+					r := pb.InternalRaftRequest{Alarm: a}
+					s.processInternalRaftRequest(context.TODO(), r)
+					s.w.Trigger(raftReq.ID, ar)
+				}()
 			}
 		case raftpb.EntryConfChange:
 			var cc raftpb.ConfChange
@@ -1017,9 +1065,13 @@ func (s *EtcdServer) applyRequest(r pb.Request) Response {
 	f := func(ev *store.Event, err error) Response {
 		return Response{Event: ev, err: err}
 	}
-	expr := timeutil.UnixNanoToTime(r.Expiration)
+
 	refresh, _ := pbutil.GetBool(r.Refresh)
-	ttlOptions := store.TTLOptionSet{ExpireTime: expr, Refresh: refresh}
+	ttlOptions := store.TTLOptionSet{Refresh: refresh}
+	if r.Expiration != 0 {
+		ttlOptions.ExpireTime = time.Unix(0, r.Expiration)
+	}
+
 	switch r.Method {
 	case "POST":
 		return f(s.store.Create(r.Path, r.Dir, r.Val, true, ttlOptions))
@@ -1147,11 +1199,9 @@ func (s *EtcdServer) snapshot(snapi uint64, confState raftpb.ConfState) {
 			}
 			plog.Panicf("unexpected create snapshot error %v", err)
 		}
-		if s.cfg.V3demo {
-			// commit v3 storage because WAL file before snapshot index
-			// could be removed after SaveSnap.
-			s.getKV().Commit()
-		}
+		// commit v3 storage because WAL file before snapshot index
+		// could be removed after SaveSnap.
+		s.KV().Commit()
 		// SaveSnap saves the snapshot and releases the locked wal files
 		// to the snapshot index.
 		if err = s.r.storage.SaveSnap(snap); err != nil {
@@ -1290,4 +1340,25 @@ func (s *EtcdServer) parseProposeCtxErr(err error, start time.Time) error {
 	}
 }
 
-func (s *EtcdServer) getKV() dstorage.ConsistentWatchableKV { return s.kv }
+func (s *EtcdServer) KV() dstorage.ConsistentWatchableKV { return s.kv }
+func (s *EtcdServer) Backend() backend.Backend {
+	s.bemu.Lock()
+	defer s.bemu.Unlock()
+	return s.be
+}
+
+func (s *EtcdServer) AuthStore() auth.AuthStore { return s.authStore }
+
+func (s *EtcdServer) restoreAlarms() error {
+	s.applyV3 = newQuotaApplierV3(s, &applierV3backend{s})
+
+	as, err := alarm.NewAlarmStore(s)
+	if err != nil {
+		return err
+	}
+	s.alarmStore = as
+	if len(as.Get(pb.AlarmType_NOSPACE)) > 0 {
+		s.applyV3 = newApplierV3Capped(s.applyV3)
+	}
+	return nil
+}

@@ -2,7 +2,6 @@ language: go
 sudo: false
 
 go:
-  - 1.4
   - 1.5
   - 1.6
   - tip
@@ -18,8 +17,15 @@ addons:
     - libaspell-dev
     - libhunspell-dev
 
+env:
+ - GO15VENDOREXPERIMENT=1
+
 before_install:
  - go get -v github.com/chzchzchz/goword
+
+# disable godep restore override
+install:
+ - go get -t -v ./...
 
 script:
  - ./test

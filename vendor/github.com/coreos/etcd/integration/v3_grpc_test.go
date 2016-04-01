@@ -10,7 +10,8 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
-// limitations under the License.package recipe
+// limitations under the License.
+
 package integration
 
 import (
@@ -19,11 +20,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coreos/etcd/Godeps/_workspace/src/golang.org/x/net/context"
-	"github.com/coreos/etcd/Godeps/_workspace/src/google.golang.org/grpc"
 	"github.com/coreos/etcd/etcdserver/api/v3rpc"
+	"github.com/coreos/etcd/etcdserver/api/v3rpc/rpctypes"
 	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
 	"github.com/coreos/etcd/pkg/testutil"
+	"golang.org/x/net/context"
+	"google.golang.org/grpc"
 )
 
 // TestV3PutOverwrite puts a key with the v3 api to a random cluster member,
@@ -33,7 +35,7 @@ func TestV3PutOverwrite(t *testing.T) {
 	clus := NewClusterV3(t, &ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
 
-	kvc := clus.RandClient().KV
+	kvc := toGRPC(clus.RandClient()).KV
 	key := []byte("foo")
 	reqput := &pb.PutRequest{Key: key, Value: []byte("bar")}
 
@@ -77,7 +79,7 @@ func TestV3TxnTooManyOps(t *testing.T) {
 	clus := NewClusterV3(t, &ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
 
-	kvc := clus.RandClient().KV
+	kvc := toGRPC(clus.RandClient()).KV
 
 	// unique keys
 	i := new(int)
@@ -130,8 +132,8 @@ func TestV3TxnTooManyOps(t *testing.T) {
 		}
 
 		_, err := kvc.Txn(context.Background(), txn)
-		if err != v3rpc.ErrTooManyOps {
-			t.Errorf("#%d: err = %v, want %v", i, err, v3rpc.ErrTooManyOps)
+		if err != rpctypes.ErrTooManyOps {
+			t.Errorf("#%d: err = %v, want %v", i, err, rpctypes.ErrTooManyOps)
 		}
 	}
 }
@@ -161,7 +163,7 @@ func TestV3TxnDuplicateKeys(t *testing.T) {
 	},
 	}
 
-	kvc := clus.RandClient().KV
+	kvc := toGRPC(clus.RandClient()).KV
 	tests := []struct {
 		txnSuccess []*pb.RequestUnion
 
@@ -170,17 +172,17 @@ func TestV3TxnDuplicateKeys(t *testing.T) {
 		{
 			txnSuccess: []*pb.RequestUnion{putreq, putreq},
 
-			werr: v3rpc.ErrDuplicateKey,
+			werr: rpctypes.ErrDuplicateKey,
 		},
 		{
 			txnSuccess: []*pb.RequestUnion{putreq, delKeyReq},
 
-			werr: v3rpc.ErrDuplicateKey,
+			werr: rpctypes.ErrDuplicateKey,
 		},
 		{
 			txnSuccess: []*pb.RequestUnion{putreq, delInRangeReq},
 
-			werr: v3rpc.ErrDuplicateKey,
+			werr: rpctypes.ErrDuplicateKey,
 		},
 		{
 			txnSuccess: []*pb.RequestUnion{delKeyReq, delInRangeReq, delKeyReq, delInRangeReq},
@@ -208,7 +210,7 @@ func TestV3PutMissingLease(t *testing.T) {
 	clus := NewClusterV3(t, &ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
 
-	kvc := clus.RandClient().KV
+	kvc := toGRPC(clus.RandClient()).KV
 	key := []byte("foo")
 	preq := &pb.PutRequest{Key: key, Lease: 123456}
 	tests := []func(){
@@ -324,7 +326,7 @@ func TestV3DeleteRange(t *testing.T) {
 
 	for i, tt := range tests {
 		clus := NewClusterV3(t, &ClusterConfig{Size: 3})
-		kvc := clus.RandClient().KV
+		kvc := toGRPC(clus.RandClient()).KV
 
 		ks := tt.keySet
 		for j := range ks {
@@ -375,7 +377,7 @@ func TestV3TxnInvaildRange(t *testing.T) {
 	clus := NewClusterV3(t, &ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
 
-	kvc := clus.RandClient().KV
+	kvc := toGRPC(clus.RandClient()).KV
 	preq := &pb.PutRequest{Key: []byte("foo"), Value: []byte("bar")}
 
 	for i := 0; i < 3; i++ {
@@ -401,15 +403,15 @@ func TestV3TxnInvaildRange(t *testing.T) {
 		Request: &pb.RequestUnion_RequestRange{
 			RequestRange: rreq}})
 
-	if _, err := kvc.Txn(context.TODO(), txn); err != v3rpc.ErrFutureRev {
-		t.Errorf("err = %v, want %v", err, v3rpc.ErrFutureRev)
+	if _, err := kvc.Txn(context.TODO(), txn); err != rpctypes.ErrFutureRev {
+		t.Errorf("err = %v, want %v", err, rpctypes.ErrFutureRev)
 	}
 
 	// compacted rev
 	tv, _ := txn.Success[1].Request.(*pb.RequestUnion_RequestRange)
 	tv.RequestRange.Revision = 1
-	if _, err := kvc.Txn(context.TODO(), txn); err != v3rpc.ErrCompacted {
-		t.Errorf("err = %v, want %v", err, v3rpc.ErrCompacted)
+	if _, err := kvc.Txn(context.TODO(), txn); err != rpctypes.ErrCompacted {
+		t.Errorf("err = %v, want %v", err, rpctypes.ErrCompacted)
 	}
 }
 
@@ -419,15 +421,15 @@ func TestV3TooLargeRequest(t *testing.T) {
 	clus := NewClusterV3(t, &ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
 
-	kvc := clus.RandClient().KV
+	kvc := toGRPC(clus.RandClient()).KV
 
 	// 2MB request value
 	largeV := make([]byte, 2*1024*1024)
 	preq := &pb.PutRequest{Key: []byte("foo"), Value: largeV}
 
 	_, err := kvc.Put(context.Background(), preq)
-	if err != v3rpc.ErrRequestTooLarge {
-		t.Errorf("err = %v, want %v", err, v3rpc.ErrRequestTooLarge)
+	if err != rpctypes.ErrRequestTooLarge {
+		t.Errorf("err = %v, want %v", err, rpctypes.ErrRequestTooLarge)
 	}
 }
 
@@ -437,7 +439,10 @@ func TestV3Hash(t *testing.T) {
 	clus := NewClusterV3(t, &ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
 
-	kvc := clus.RandClient().KV
+	cli := clus.RandClient()
+	kvc := toGRPC(cli).KV
+	m := toGRPC(cli).Maintenance
+
 	preq := &pb.PutRequest{Key: []byte("foo"), Value: []byte("bar")}
 
 	for i := 0; i < 3; i++ {
@@ -447,9 +452,140 @@ func TestV3Hash(t *testing.T) {
 		}
 	}
 
-	resp, err := kvc.Hash(context.Background(), &pb.HashRequest{})
+	resp, err := m.Hash(context.Background(), &pb.HashRequest{})
 	if err != nil || resp.Hash == 0 {
 		t.Fatalf("couldn't hash (%v, hash %d)", err, resp.Hash)
+	}
+}
+
+// TestV3StorageQuotaAPI tests the V3 server respects quotas at the API layer
+func TestV3StorageQuotaAPI(t *testing.T) {
+	defer testutil.AfterTest(t)
+
+	clus := NewClusterV3(t, &ClusterConfig{Size: 3})
+
+	clus.Members[0].QuotaBackendBytes = 64 * 1024
+	clus.Members[0].Stop(t)
+	clus.Members[0].Restart(t)
+
+	defer clus.Terminate(t)
+	kvc := toGRPC(clus.Client(0)).KV
+
+	key := []byte("abc")
+
+	// test small put that fits in quota
+	smallbuf := make([]byte, 512)
+	if _, err := kvc.Put(context.TODO(), &pb.PutRequest{Key: key, Value: smallbuf}); err != nil {
+		t.Fatal(err)
+	}
+
+	// test big put
+	bigbuf := make([]byte, 64*1024)
+	_, err := kvc.Put(context.TODO(), &pb.PutRequest{Key: key, Value: bigbuf})
+	if err == nil || err != rpctypes.ErrNoSpace {
+		t.Fatalf("big put got %v, expected %v", err, rpctypes.ErrNoSpace)
+	}
+
+	// test big txn
+	puttxn := &pb.RequestUnion{
+		Request: &pb.RequestUnion_RequestPut{
+			RequestPut: &pb.PutRequest{
+				Key:   key,
+				Value: bigbuf,
+			},
+		},
+	}
+	txnreq := &pb.TxnRequest{}
+	txnreq.Success = append(txnreq.Success, puttxn)
+	_, txnerr := kvc.Txn(context.TODO(), txnreq)
+	if txnerr == nil || err != rpctypes.ErrNoSpace {
+		t.Fatalf("big txn got %v, expected %v", err, rpctypes.ErrNoSpace)
+	}
+}
+
+// TestV3StorageQuotaApply tests the V3 server respects quotas during apply
+func TestV3StorageQuotaApply(t *testing.T) {
+	testutil.AfterTest(t)
+
+	clus := NewClusterV3(t, &ClusterConfig{Size: 2})
+	defer clus.Terminate(t)
+	kvc0 := toGRPC(clus.Client(0)).KV
+	kvc1 := toGRPC(clus.Client(1)).KV
+
+	// force a node to have a different quota
+	clus.Members[0].QuotaBackendBytes = 64 * 1024
+	clus.Members[0].Stop(t)
+	clus.Members[0].Restart(t)
+	clus.waitLeader(t, clus.Members)
+
+	key := []byte("abc")
+
+	// test small put still works
+	smallbuf := make([]byte, 1024)
+	_, serr := kvc0.Put(context.TODO(), &pb.PutRequest{Key: key, Value: smallbuf})
+	if serr != nil {
+		t.Fatal(serr)
+	}
+
+	// test big put
+	bigbuf := make([]byte, 64*1024)
+	_, err := kvc1.Put(context.TODO(), &pb.PutRequest{Key: key, Value: bigbuf})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// small quota machine should reject put
+	// first, synchronize with the cluster via quorum get
+	kvc0.Range(context.TODO(), &pb.RangeRequest{Key: []byte("foo")})
+	if _, err := kvc0.Put(context.TODO(), &pb.PutRequest{Key: key, Value: smallbuf}); err == nil {
+		t.Fatalf("past-quota instance should reject put")
+	}
+
+	// large quota machine should reject put
+	if _, err := kvc1.Put(context.TODO(), &pb.PutRequest{Key: key, Value: smallbuf}); err == nil {
+		t.Fatalf("past-quota instance should reject put")
+	}
+
+	// reset large quota node to ensure alarm persisted
+	clus.Members[1].Stop(t)
+	clus.Members[1].Restart(t)
+	clus.waitLeader(t, clus.Members)
+
+	if _, err := kvc1.Put(context.TODO(), &pb.PutRequest{Key: key, Value: smallbuf}); err == nil {
+		t.Fatalf("alarmed instance should reject put after reset")
+	}
+}
+
+// TestV3AlarmDeactivate ensures that space alarms can be deactivated so puts go through.
+func TestV3AlarmDeactivate(t *testing.T) {
+	clus := NewClusterV3(t, &ClusterConfig{Size: 3})
+	defer clus.Terminate(t)
+	kvc := toGRPC(clus.RandClient()).KV
+	mt := toGRPC(clus.RandClient()).Maintenance
+
+	alarmReq := &pb.AlarmRequest{
+		MemberID: 123,
+		Action:   pb.AlarmRequest_ACTIVATE,
+		Alarm:    pb.AlarmType_NOSPACE,
+	}
+	if _, err := mt.Alarm(context.TODO(), alarmReq); err != nil {
+		t.Fatal(err)
+	}
+
+	key := []byte("abc")
+	smallbuf := make([]byte, 512)
+	_, err := kvc.Put(context.TODO(), &pb.PutRequest{Key: key, Value: smallbuf})
+	if err == nil && err != rpctypes.ErrNoSpace {
+		t.Fatalf("put got %v, expected %v", err, rpctypes.ErrNoSpace)
+	}
+
+	alarmReq.Action = pb.AlarmRequest_DEACTIVATE
+	if _, err = mt.Alarm(context.TODO(), alarmReq); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err = kvc.Put(context.TODO(), &pb.PutRequest{Key: key, Value: smallbuf}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -590,7 +726,7 @@ func TestV3RangeRequest(t *testing.T) {
 	for i, tt := range tests {
 		clus := NewClusterV3(t, &ClusterConfig{Size: 3})
 		for _, k := range tt.putKeys {
-			kvc := clus.RandClient().KV
+			kvc := toGRPC(clus.RandClient()).KV
 			req := &pb.PutRequest{Key: []byte(k), Value: []byte("bar")}
 			if _, err := kvc.Put(context.TODO(), req); err != nil {
 				t.Fatalf("#%d: couldn't put key (%v)", i, err)
@@ -598,7 +734,7 @@ func TestV3RangeRequest(t *testing.T) {
 		}
 
 		for j, req := range tt.reqs {
-			kvc := clus.RandClient().KV
+			kvc := toGRPC(clus.RandClient()).KV
 			resp, err := kvc.Range(context.TODO(), &req)
 			if err != nil {
 				t.Errorf("#%d.%d: Range error: %v", i, j, err)
@@ -627,7 +763,6 @@ func TestV3RangeRequest(t *testing.T) {
 }
 
 func newClusterV3NoClients(t *testing.T, cfg *ClusterConfig) *ClusterV3 {
-	cfg.UseV3 = true
 	cfg.UseGRPC = true
 	clus := &ClusterV3{cluster: NewClusterByConfig(t, cfg)}
 	clus.Launch(t)
@@ -668,17 +803,16 @@ func TestTLSGRPCRejectInsecureClient(t *testing.T) {
 	donec := make(chan error, 1)
 	go func() {
 		reqput := &pb.PutRequest{Key: []byte("foo"), Value: []byte("bar")}
-		_, perr := client.KV.Put(ctx, reqput)
+		_, perr := toGRPC(client).KV.Put(ctx, reqput)
 		donec <- perr
 	}()
 
 	st, err = conn.WaitForStateChange(ctx, st)
 	if err != nil {
 		t.Fatalf("unexpected error waiting for change (%v)", err)
-	} else if st != grpc.Connecting && st != grpc.TransientFailure {
-		t.Fatalf("expected connecting or transient failure state, got %v", st)
+	} else if st == grpc.Ready {
+		t.Fatalf("expected failure state, got %v", st)
 	}
-
 	cancel()
 	if perr := <-donec; perr == nil {
 		t.Fatalf("expected client error on put")
@@ -717,7 +851,7 @@ func TestTLSGRPCAcceptSecureAll(t *testing.T) {
 	defer client.Close()
 
 	reqput := &pb.PutRequest{Key: []byte("foo"), Value: []byte("bar")}
-	if _, err := client.KV.Put(context.TODO(), reqput); err != nil {
+	if _, err := toGRPC(client).KV.Put(context.TODO(), reqput); err != nil {
 		t.Fatalf("unexpected error on put over tls (%v)", err)
 	}
 }

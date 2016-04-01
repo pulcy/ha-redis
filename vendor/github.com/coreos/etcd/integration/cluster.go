@@ -10,10 +10,12 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
-// limitations under the License.package recipe
+// limitations under the License.
+
 package integration
 
 import (
+	"crypto/tls"
 	"fmt"
 	"io/ioutil"
 	"math/rand"
@@ -29,14 +31,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coreos/etcd/Godeps/_workspace/src/golang.org/x/net/context"
-	"github.com/coreos/etcd/Godeps/_workspace/src/google.golang.org/grpc"
+	"golang.org/x/net/context"
+	"google.golang.org/grpc"
 
 	"github.com/coreos/etcd/client"
 	"github.com/coreos/etcd/clientv3"
 	"github.com/coreos/etcd/etcdserver"
 	"github.com/coreos/etcd/etcdserver/api/v3rpc"
 	"github.com/coreos/etcd/etcdserver/etcdhttp"
+	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
 	"github.com/coreos/etcd/pkg/testutil"
 	"github.com/coreos/etcd/pkg/transport"
 	"github.com/coreos/etcd/pkg/types"
@@ -69,7 +72,6 @@ type ClusterConfig struct {
 	PeerTLS      *transport.TLSInfo
 	ClientTLS    *transport.TLSInfo
 	DiscoveryURL string
-	UseV3        bool
 	UseGRPC      bool
 }
 
@@ -196,7 +198,6 @@ func (c *cluster) mustNewMember(t *testing.T) *member {
 	name := c.name(rand.Int())
 	m := mustNewMember(t, name, c.cfg.PeerTLS, c.cfg.ClientTLS)
 	m.DiscoveryURL = c.cfg.DiscoveryURL
-	m.V3demo = c.cfg.UseV3
 	if c.cfg.UseGRPC {
 		if err := m.listenGRPC(); err != nil {
 			t.Fatal(err)
@@ -468,9 +469,6 @@ func mustNewMember(t *testing.T, name string, peerTLS *transport.TLSInfo, client
 
 // listenGRPC starts a grpc server over a unix domain socket on the member
 func (m *member) listenGRPC() error {
-	if m.V3demo == false {
-		return fmt.Errorf("starting grpc server without v3 configured")
-	}
 	// prefix with localhost so cert has right domain
 	m.grpcAddr = "localhost:" + m.Name + ".sock"
 	if err := os.RemoveAll(m.grpcAddr); err != nil {
@@ -490,10 +488,18 @@ func NewClientV3(m *member) (*clientv3.Client, error) {
 	if m.grpcAddr == "" {
 		return nil, fmt.Errorf("member not configured for grpc")
 	}
+
 	cfg := clientv3.Config{
 		Endpoints:   []string{m.grpcAddr},
 		DialTimeout: 5 * time.Second,
-		TLS:         m.ClientTLSInfo,
+	}
+
+	if m.ClientTLSInfo != nil {
+		tls, err := m.ClientTLSInfo.ClientConfig()
+		if err != nil {
+			return nil, err
+		}
+		cfg.TLS = tls
 	}
 	return clientv3.New(cfg)
 }
@@ -575,7 +581,16 @@ func (m *member) Launch() error {
 		m.hss = append(m.hss, hs)
 	}
 	if m.grpcListener != nil {
-		m.grpcServer, err = v3rpc.Server(m.s, m.ClientTLSInfo)
+		var (
+			tlscfg *tls.Config
+		)
+		if m.ClientTLSInfo != nil && !m.ClientTLSInfo.Empty() {
+			tlscfg, err = m.ClientTLSInfo.ServerConfig()
+			if err != nil {
+				return err
+			}
+		}
+		m.grpcServer = v3rpc.Server(m.s, tlscfg)
 		go m.grpcServer.Serve(m.grpcListener)
 	}
 	return nil
@@ -703,7 +718,6 @@ type ClusterV3 struct {
 // NewClusterV3 returns a launched cluster with a grpc client connection
 // for each cluster member.
 func NewClusterV3(t *testing.T, cfg *ClusterConfig) *ClusterV3 {
-	cfg.UseV3 = true
 	cfg.UseGRPC = true
 	clus := &ClusterV3{cluster: NewClusterByConfig(t, cfg)}
 	for _, m := range clus.Members {
@@ -732,4 +746,27 @@ func (c *ClusterV3) RandClient() *clientv3.Client {
 
 func (c *ClusterV3) Client(i int) *clientv3.Client {
 	return c.clients[i]
+}
+
+type grpcAPI struct {
+	// Cluster is the cluster API for the client's connection.
+	Cluster pb.ClusterClient
+	// KV is the keyvalue API for the client's connection.
+	KV pb.KVClient
+	// Lease is the lease API for the client's connection.
+	Lease pb.LeaseClient
+	// Watch is the watch API for the client's connection.
+	Watch pb.WatchClient
+	// Maintenance is the maintenance API for the client's connection.
+	Maintenance pb.MaintenanceClient
+}
+
+func toGRPC(c *clientv3.Client) grpcAPI {
+	return grpcAPI{
+		pb.NewClusterClient(c.ActiveConnection()),
+		pb.NewKVClient(c.ActiveConnection()),
+		pb.NewLeaseClient(c.ActiveConnection()),
+		pb.NewWatchClient(c.ActiveConnection()),
+		pb.NewMaintenanceClient(c.ActiveConnection()),
+	}
 }

@@ -15,12 +15,13 @@
 package backend
 
 import (
+	"fmt"
 	"io/ioutil"
 	"os"
 	"testing"
 	"time"
 
-	"github.com/coreos/etcd/Godeps/_workspace/src/github.com/boltdb/bolt"
+	"github.com/boltdb/bolt"
 )
 
 func TestBackendClose(t *testing.T) {
@@ -38,8 +39,8 @@ func TestBackendClose(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(time.Second):
-		t.Errorf("failed to close database in 1s")
+	case <-time.After(10 * time.Second):
+		t.Errorf("failed to close database in 10s")
 	}
 }
 
@@ -113,6 +114,47 @@ func TestBackendBatchIntervalCommit(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestBackendDefrag(t *testing.T) {
+	b, tmpPath := NewDefaultTmpBackend()
+	defer cleanup(b, tmpPath)
+
+	tx := b.BatchTx()
+	tx.Lock()
+	tx.UnsafeCreateBucket([]byte("test"))
+	for i := 0; i < defragLimit+100; i++ {
+		tx.UnsafePut([]byte("test"), []byte(fmt.Sprintf("foo_%d", i)), []byte("bar"))
+	}
+	tx.Unlock()
+	b.ForceCommit()
+
+	// shrink and check hash
+	oh, err := b.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = b.Defrag()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nh, err := b.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oh != nh {
+		t.Errorf("hash = %v, want %v", nh, oh)
+	}
+
+	// try put more keys after shrink.
+	tx = b.BatchTx()
+	tx.Lock()
+	tx.UnsafeCreateBucket([]byte("test"))
+	tx.UnsafePut([]byte("test"), []byte("more"), []byte("bar"))
+	tx.Unlock()
+	b.ForceCommit()
 }
 
 func cleanup(b Backend, path string) {

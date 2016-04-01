@@ -19,9 +19,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coreos/etcd/Godeps/_workspace/src/golang.org/x/net/context"
 	"github.com/coreos/etcd/pkg/testutil"
 	"github.com/coreos/etcd/raft/raftpb"
+	"golang.org/x/net/context"
 )
 
 // TestNodeStep ensures that node.Step sends msgProp to propc chan
@@ -207,13 +207,12 @@ func TestBlockProposal(t *testing.T) {
 	}
 
 	n.Campaign(context.TODO())
-	testutil.WaitSchedule()
 	select {
 	case err := <-errc:
 		if err != nil {
 			t.Errorf("err = %v, want %v", err, nil)
 		}
-	default:
+	case <-time.After(10 * time.Second):
 		t.Errorf("blocking proposal, want unblocking")
 	}
 }

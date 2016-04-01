@@ -20,13 +20,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coreos/etcd/Godeps/_workspace/src/golang.org/x/net/context"
 	"github.com/coreos/etcd/clientv3"
-	"github.com/coreos/etcd/etcdserver/api/v3rpc"
+	"github.com/coreos/etcd/etcdserver/api/v3rpc/rpctypes"
 	"github.com/coreos/etcd/integration"
-	"github.com/coreos/etcd/lease"
 	"github.com/coreos/etcd/pkg/testutil"
 	"github.com/coreos/etcd/storage/storagepb"
+	"golang.org/x/net/context"
 )
 
 func TestKVPut(t *testing.T) {
@@ -48,10 +47,10 @@ func TestKVPut(t *testing.T) {
 
 	tests := []struct {
 		key, val string
-		leaseID  lease.LeaseID
+		leaseID  clientv3.LeaseID
 	}{
-		{"foo", "bar", lease.NoLease},
-		{"hello", "world", lease.LeaseID(resp.ID)},
+		{"foo", "bar", clientv3.NoLease},
+		{"hello", "world", clientv3.LeaseID(resp.ID)},
 	}
 
 	for i, tt := range tests {
@@ -68,7 +67,7 @@ func TestKVPut(t *testing.T) {
 		if !bytes.Equal([]byte(tt.val), resp.Kvs[0].Value) {
 			t.Errorf("#%d: val = %s, want %s", i, tt.val, resp.Kvs[0].Value)
 		}
-		if tt.leaseID != lease.LeaseID(resp.Kvs[0].Lease) {
+		if tt.leaseID != clientv3.LeaseID(resp.Kvs[0].Lease) {
 			t.Errorf("#%d: val = %d, want %d", i, tt.leaseID, resp.Kvs[0].Lease)
 		}
 	}
@@ -149,11 +148,11 @@ func TestKVRange(t *testing.T) {
 				{Key: []byte("fop"), Value: nil, CreateRevision: 9, ModRevision: 9, Version: 1},
 			},
 		},
-		// range all with SortByCreatedRev, SortDescend
+		// range all with SortByCreateRevision, SortDescend
 		{
 			"a", "x",
 			0,
-			[]clientv3.OpOption{clientv3.WithSort(clientv3.SortByCreatedRev, clientv3.SortDescend)},
+			[]clientv3.OpOption{clientv3.WithSort(clientv3.SortByCreateRevision, clientv3.SortDescend)},
 
 			[]*storagepb.KeyValue{
 				{Key: []byte("fop"), Value: nil, CreateRevision: 9, ModRevision: 9, Version: 1},
@@ -164,11 +163,11 @@ func TestKVRange(t *testing.T) {
 				{Key: []byte("a"), Value: nil, CreateRevision: 2, ModRevision: 2, Version: 1},
 			},
 		},
-		// range all with SortByModifiedRev, SortDescend
+		// range all with SortByModRevision, SortDescend
 		{
 			"a", "x",
 			0,
-			[]clientv3.OpOption{clientv3.WithSort(clientv3.SortByModifiedRev, clientv3.SortDescend)},
+			[]clientv3.OpOption{clientv3.WithSort(clientv3.SortByModRevision, clientv3.SortDescend)},
 
 			[]*storagepb.KeyValue{
 				{Key: []byte("fop"), Value: nil, CreateRevision: 9, ModRevision: 9, Version: 1},
@@ -344,11 +343,15 @@ func TestKVCompact(t *testing.T) {
 		t.Fatalf("couldn't compact kv space (%v)", err)
 	}
 	err = kv.Compact(ctx, 7)
-	if err == nil || err != v3rpc.ErrCompacted {
-		t.Fatalf("error got %v, want %v", err, v3rpc.ErrFutureRev)
+	if err == nil || err != rpctypes.ErrCompacted {
+		t.Fatalf("error got %v, want %v", err, rpctypes.ErrFutureRev)
 	}
 
-	wc := clientv3.NewWatcher(clus.RandClient())
+	wcli := clus.RandClient()
+	// new watcher could precede receiving the compaction without quorum first
+	wcli.Get(ctx, "quorum-get")
+
+	wc := clientv3.NewWatcher(wcli)
 	defer wc.Close()
 	wchan := wc.Watch(ctx, "foo", clientv3.WithRev(3))
 
@@ -360,8 +363,8 @@ func TestKVCompact(t *testing.T) {
 	}
 
 	err = kv.Compact(ctx, 1000)
-	if err == nil || err != v3rpc.ErrFutureRev {
-		t.Fatalf("error got %v, want %v", err, v3rpc.ErrFutureRev)
+	if err == nil || err != rpctypes.ErrFutureRev {
+		t.Fatalf("error got %v, want %v", err, rpctypes.ErrFutureRev)
 	}
 }
 
@@ -452,5 +455,28 @@ func TestKVPutFailGetRetry(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatalf("timed out waiting for get")
 	case <-donec:
+	}
+}
+
+// TestKVGetCancel tests that a context cancel on a Get terminates as expected.
+func TestKVGetCancel(t *testing.T) {
+	defer testutil.AfterTest(t)
+
+	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
+	defer clus.Terminate(t)
+
+	oldconn := clus.Client(0).ActiveConnection()
+	kv := clientv3.NewKV(clus.Client(0))
+
+	ctx, cancel := context.WithCancel(context.TODO())
+	cancel()
+
+	resp, err := kv.Get(ctx, "abc")
+	if err == nil {
+		t.Fatalf("cancel on get response %v, expected context error", resp)
+	}
+	newconn := clus.Client(0).ActiveConnection()
+	if oldconn != newconn {
+		t.Fatalf("cancel on get broke client connection")
 	}
 }

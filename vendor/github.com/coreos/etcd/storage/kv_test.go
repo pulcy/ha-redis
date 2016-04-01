@@ -80,7 +80,7 @@ func TestKVTxnRange(t *testing.T) { testKVRange(t, txnRangeFunc) }
 
 func testKVRange(t *testing.T, f rangeFunc) {
 	b, tmpPath := backend.NewDefaultTmpBackend()
-	s := NewStore(b, &lease.FakeLessor{})
+	s := NewStore(b, &lease.FakeLessor{}, nil)
 	defer cleanup(s, b, tmpPath)
 
 	kvs := put3TestKVs(s)
@@ -146,7 +146,7 @@ func TestKVTxnRangeRev(t *testing.T) { testKVRangeRev(t, normalRangeFunc) }
 
 func testKVRangeRev(t *testing.T, f rangeFunc) {
 	b, tmpPath := backend.NewDefaultTmpBackend()
-	s := NewStore(b, &lease.FakeLessor{})
+	s := NewStore(b, &lease.FakeLessor{}, nil)
 	defer cleanup(s, b, tmpPath)
 
 	kvs := put3TestKVs(s)
@@ -182,11 +182,11 @@ func TestKVTxnRangeBadRev(t *testing.T) { testKVRangeBadRev(t, normalRangeFunc) 
 
 func testKVRangeBadRev(t *testing.T, f rangeFunc) {
 	b, tmpPath := backend.NewDefaultTmpBackend()
-	s := NewStore(b, &lease.FakeLessor{})
+	s := NewStore(b, &lease.FakeLessor{}, nil)
 	defer cleanup(s, b, tmpPath)
 
 	put3TestKVs(s)
-	if err := s.Compact(4); err != nil {
+	if _, err := s.Compact(4); err != nil {
 		t.Fatalf("compact error (%v)", err)
 	}
 
@@ -213,7 +213,7 @@ func TestKVTxnRangeLimit(t *testing.T) { testKVRangeLimit(t, txnRangeFunc) }
 
 func testKVRangeLimit(t *testing.T, f rangeFunc) {
 	b, tmpPath := backend.NewDefaultTmpBackend()
-	s := NewStore(b, &lease.FakeLessor{})
+	s := NewStore(b, &lease.FakeLessor{}, nil)
 	defer cleanup(s, b, tmpPath)
 
 	kvs := put3TestKVs(s)
@@ -251,7 +251,7 @@ func TestKVTxnPutMultipleTimes(t *testing.T) { testKVPutMultipleTimes(t, txnPutF
 
 func testKVPutMultipleTimes(t *testing.T, f putFunc) {
 	b, tmpPath := backend.NewDefaultTmpBackend()
-	s := NewStore(b, &lease.FakeLessor{})
+	s := NewStore(b, &lease.FakeLessor{}, nil)
 	defer cleanup(s, b, tmpPath)
 
 	for i := 0; i < 10; i++ {
@@ -313,7 +313,7 @@ func testKVDeleteRange(t *testing.T, f deleteRangeFunc) {
 
 	for i, tt := range tests {
 		b, tmpPath := backend.NewDefaultTmpBackend()
-		s := NewStore(b, &lease.FakeLessor{})
+		s := NewStore(b, &lease.FakeLessor{}, nil)
 
 		s.Put([]byte("foo"), []byte("bar"), lease.NoLease)
 		s.Put([]byte("foo1"), []byte("bar1"), lease.NoLease)
@@ -333,7 +333,7 @@ func TestKVTxnDeleteMultipleTimes(t *testing.T) { testKVDeleteMultipleTimes(t, t
 
 func testKVDeleteMultipleTimes(t *testing.T, f deleteRangeFunc) {
 	b, tmpPath := backend.NewDefaultTmpBackend()
-	s := NewStore(b, &lease.FakeLessor{})
+	s := NewStore(b, &lease.FakeLessor{}, nil)
 	defer cleanup(s, b, tmpPath)
 
 	s.Put([]byte("foo"), []byte("bar"), lease.NoLease)
@@ -354,7 +354,7 @@ func testKVDeleteMultipleTimes(t *testing.T, f deleteRangeFunc) {
 // test that range, put, delete on single key in sequence repeatedly works correctly.
 func TestKVOperationInSequence(t *testing.T) {
 	b, tmpPath := backend.NewDefaultTmpBackend()
-	s := NewStore(b, &lease.FakeLessor{})
+	s := NewStore(b, &lease.FakeLessor{}, nil)
 	defer cleanup(s, b, tmpPath)
 
 	for i := 0; i < 10; i++ {
@@ -401,7 +401,7 @@ func TestKVOperationInSequence(t *testing.T) {
 
 func TestKVTxnBlockNonTxnOperations(t *testing.T) {
 	b, tmpPath := backend.NewDefaultTmpBackend()
-	s := NewStore(b, &lease.FakeLessor{})
+	s := NewStore(b, &lease.FakeLessor{}, nil)
 
 	tests := []func(){
 		func() { s.Range([]byte("foo"), nil, 0, 0) },
@@ -435,7 +435,7 @@ func TestKVTxnBlockNonTxnOperations(t *testing.T) {
 
 func TestKVTxnWrongID(t *testing.T) {
 	b, tmpPath := backend.NewDefaultTmpBackend()
-	s := NewStore(b, &lease.FakeLessor{})
+	s := NewStore(b, &lease.FakeLessor{}, nil)
 	defer cleanup(s, b, tmpPath)
 
 	id := s.TxnBegin()
@@ -472,7 +472,7 @@ func TestKVTxnWrongID(t *testing.T) {
 // test that txn range, put, delete on single key in sequence repeatedly works correctly.
 func TestKVTxnOperationInSequence(t *testing.T) {
 	b, tmpPath := backend.NewDefaultTmpBackend()
-	s := NewStore(b, &lease.FakeLessor{})
+	s := NewStore(b, &lease.FakeLessor{}, nil)
 	defer cleanup(s, b, tmpPath)
 
 	for i := 0; i < 10; i++ {
@@ -528,7 +528,7 @@ func TestKVTxnOperationInSequence(t *testing.T) {
 
 func TestKVCompactReserveLastValue(t *testing.T) {
 	b, tmpPath := backend.NewDefaultTmpBackend()
-	s := NewStore(b, &lease.FakeLessor{})
+	s := NewStore(b, &lease.FakeLessor{}, nil)
 	defer cleanup(s, b, tmpPath)
 
 	s.Put([]byte("foo"), []byte("bar0"), 1)
@@ -566,7 +566,7 @@ func TestKVCompactReserveLastValue(t *testing.T) {
 		},
 	}
 	for i, tt := range tests {
-		err := s.Compact(tt.rev)
+		_, err := s.Compact(tt.rev)
 		if err != nil {
 			t.Errorf("#%d: unexpect compact error %v", i, err)
 		}
@@ -582,7 +582,7 @@ func TestKVCompactReserveLastValue(t *testing.T) {
 
 func TestKVCompactBad(t *testing.T) {
 	b, tmpPath := backend.NewDefaultTmpBackend()
-	s := NewStore(b, &lease.FakeLessor{})
+	s := NewStore(b, &lease.FakeLessor{}, nil)
 	defer cleanup(s, b, tmpPath)
 
 	s.Put([]byte("foo"), []byte("bar0"), lease.NoLease)
@@ -602,7 +602,7 @@ func TestKVCompactBad(t *testing.T) {
 		{100, ErrFutureRev},
 	}
 	for i, tt := range tests {
-		err := s.Compact(tt.rev)
+		_, err := s.Compact(tt.rev)
 		if err != tt.werr {
 			t.Errorf("#%d: compact error = %v, want %v", i, err, tt.werr)
 		}
@@ -615,7 +615,7 @@ func TestKVHash(t *testing.T) {
 	for i := 0; i < len(hashes); i++ {
 		var err error
 		b, tmpPath := backend.NewDefaultTmpBackend()
-		kv := NewStore(b, &lease.FakeLessor{})
+		kv := NewStore(b, &lease.FakeLessor{}, nil)
 		kv.Put([]byte("foo0"), []byte("bar0"), lease.NoLease)
 		kv.Put([]byte("foo1"), []byte("bar0"), lease.NoLease)
 		hashes[i], err = kv.Hash()
@@ -652,7 +652,7 @@ func TestKVRestore(t *testing.T) {
 	}
 	for i, tt := range tests {
 		b, tmpPath := backend.NewDefaultTmpBackend()
-		s := NewStore(b, &lease.FakeLessor{})
+		s := NewStore(b, &lease.FakeLessor{}, nil)
 		tt(s)
 		var kvss [][]storagepb.KeyValue
 		for k := int64(0); k < 10; k++ {
@@ -662,7 +662,7 @@ func TestKVRestore(t *testing.T) {
 		s.Close()
 
 		// ns should recover the the previous state from backend.
-		ns := NewStore(b, &lease.FakeLessor{})
+		ns := NewStore(b, &lease.FakeLessor{}, nil)
 		// wait for possible compaction to finish
 		testutil.WaitSchedule()
 		var nkvss [][]storagepb.KeyValue
@@ -680,7 +680,7 @@ func TestKVRestore(t *testing.T) {
 
 func TestKVSnapshot(t *testing.T) {
 	b, tmpPath := backend.NewDefaultTmpBackend()
-	s := NewStore(b, &lease.FakeLessor{})
+	s := NewStore(b, &lease.FakeLessor{}, nil)
 	defer cleanup(s, b, tmpPath)
 
 	wkvs := put3TestKVs(s)
@@ -700,7 +700,7 @@ func TestKVSnapshot(t *testing.T) {
 	}
 	f.Close()
 
-	ns := NewStore(b, &lease.FakeLessor{})
+	ns := NewStore(b, &lease.FakeLessor{}, nil)
 	defer ns.Close()
 	kvs, rev, err := ns.Range([]byte("a"), []byte("z"), 0, 0)
 	if err != nil {
@@ -716,19 +716,16 @@ func TestKVSnapshot(t *testing.T) {
 
 func TestWatchableKVWatch(t *testing.T) {
 	b, tmpPath := backend.NewDefaultTmpBackend()
-	s := WatchableKV(newWatchableStore(b, &lease.FakeLessor{}))
+	s := WatchableKV(newWatchableStore(b, &lease.FakeLessor{}, nil))
 	defer cleanup(s, b, tmpPath)
 
 	w := s.NewWatchStream()
 	defer w.Close()
 
-	wid := w.Watch([]byte("foo"), true, 0)
+	wid := w.Watch([]byte("foo"), []byte("fop"), 0)
 
-	s.Put([]byte("foo"), []byte("bar"), 1)
-	select {
-	case resp := <-w.Chan():
-		wev := storagepb.Event{
-			Type: storagepb.PUT,
+	wev := []storagepb.Event{
+		{Type: storagepb.PUT,
 			Kv: &storagepb.KeyValue{
 				Key:            []byte("foo"),
 				Value:          []byte("bar"),
@@ -737,23 +734,8 @@ func TestWatchableKVWatch(t *testing.T) {
 				Version:        1,
 				Lease:          1,
 			},
-		}
-		if resp.WatchID != wid {
-			t.Errorf("resp.WatchID got = %d, want = %d", resp.WatchID, wid)
-		}
-		ev := resp.Events[0]
-		if !reflect.DeepEqual(ev, wev) {
-			t.Errorf("watched event = %+v, want %+v", ev, wev)
-		}
-	case <-time.After(5 * time.Second):
-		// CPU might be too slow, and the routine is not able to switch around
-		testutil.FatalStack(t, "failed to watch the event")
-	}
-
-	s.Put([]byte("foo1"), []byte("bar1"), 2)
-	select {
-	case resp := <-w.Chan():
-		wev := storagepb.Event{
+		},
+		{
 			Type: storagepb.PUT,
 			Kv: &storagepb.KeyValue{
 				Key:            []byte("foo1"),
@@ -763,49 +745,8 @@ func TestWatchableKVWatch(t *testing.T) {
 				Version:        1,
 				Lease:          2,
 			},
-		}
-		if resp.WatchID != wid {
-			t.Errorf("resp.WatchID got = %d, want = %d", resp.WatchID, wid)
-		}
-		ev := resp.Events[0]
-		if !reflect.DeepEqual(ev, wev) {
-			t.Errorf("watched event = %+v, want %+v", ev, wev)
-		}
-	case <-time.After(5 * time.Second):
-		testutil.FatalStack(t, "failed to watch the event")
-	}
-
-	w = s.NewWatchStream()
-	wid = w.Watch([]byte("foo1"), false, 1)
-
-	select {
-	case resp := <-w.Chan():
-		wev := storagepb.Event{
-			Type: storagepb.PUT,
-			Kv: &storagepb.KeyValue{
-				Key:            []byte("foo1"),
-				Value:          []byte("bar1"),
-				CreateRevision: 3,
-				ModRevision:    3,
-				Version:        1,
-				Lease:          2,
-			},
-		}
-		if resp.WatchID != wid {
-			t.Errorf("resp.WatchID got = %d, want = %d", resp.WatchID, wid)
-		}
-		ev := resp.Events[0]
-		if !reflect.DeepEqual(ev, wev) {
-			t.Errorf("watched event = %+v, want %+v", ev, wev)
-		}
-	case <-time.After(5 * time.Second):
-		testutil.FatalStack(t, "failed to watch the event")
-	}
-
-	s.Put([]byte("foo1"), []byte("bar11"), 3)
-	select {
-	case resp := <-w.Chan():
-		wev := storagepb.Event{
+		},
+		{
 			Type: storagepb.PUT,
 			Kv: &storagepb.KeyValue{
 				Key:            []byte("foo1"),
@@ -815,13 +756,63 @@ func TestWatchableKVWatch(t *testing.T) {
 				Version:        2,
 				Lease:          3,
 			},
-		}
+		},
+	}
+
+	s.Put([]byte("foo"), []byte("bar"), 1)
+	select {
+	case resp := <-w.Chan():
 		if resp.WatchID != wid {
 			t.Errorf("resp.WatchID got = %d, want = %d", resp.WatchID, wid)
 		}
 		ev := resp.Events[0]
-		if !reflect.DeepEqual(ev, wev) {
-			t.Errorf("watched event = %+v, want %+v", ev, wev)
+		if !reflect.DeepEqual(ev, wev[0]) {
+			t.Errorf("watched event = %+v, want %+v", ev, wev[0])
+		}
+	case <-time.After(5 * time.Second):
+		// CPU might be too slow, and the routine is not able to switch around
+		testutil.FatalStack(t, "failed to watch the event")
+	}
+
+	s.Put([]byte("foo1"), []byte("bar1"), 2)
+	select {
+	case resp := <-w.Chan():
+		if resp.WatchID != wid {
+			t.Errorf("resp.WatchID got = %d, want = %d", resp.WatchID, wid)
+		}
+		ev := resp.Events[0]
+		if !reflect.DeepEqual(ev, wev[1]) {
+			t.Errorf("watched event = %+v, want %+v", ev, wev[1])
+		}
+	case <-time.After(5 * time.Second):
+		testutil.FatalStack(t, "failed to watch the event")
+	}
+
+	w = s.NewWatchStream()
+	wid = w.Watch([]byte("foo1"), []byte("foo2"), 3)
+
+	select {
+	case resp := <-w.Chan():
+		if resp.WatchID != wid {
+			t.Errorf("resp.WatchID got = %d, want = %d", resp.WatchID, wid)
+		}
+		ev := resp.Events[0]
+		if !reflect.DeepEqual(ev, wev[1]) {
+			t.Errorf("watched event = %+v, want %+v", ev, wev[1])
+		}
+	case <-time.After(5 * time.Second):
+		testutil.FatalStack(t, "failed to watch the event")
+	}
+
+	s.Put([]byte("foo1"), []byte("bar11"), 3)
+	select {
+	case resp := <-w.Chan():
+		if resp.WatchID != wid {
+			t.Errorf("resp.WatchID got = %d, want = %d", resp.WatchID, wid)
+		}
+		ev := resp.Events[0]
+		if !reflect.DeepEqual(ev, wev[2]) {
+			t.Errorf("watched event = %+v, want %+v", ev, wev[2])
 		}
 	case <-time.After(5 * time.Second):
 		testutil.FatalStack(t, "failed to watch the event")

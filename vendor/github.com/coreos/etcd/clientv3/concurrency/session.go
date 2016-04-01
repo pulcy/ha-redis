@@ -11,14 +11,14 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
 package concurrency
 
 import (
 	"sync"
 
-	"github.com/coreos/etcd/Godeps/_workspace/src/golang.org/x/net/context"
 	v3 "github.com/coreos/etcd/clientv3"
-	"github.com/coreos/etcd/lease"
+	"golang.org/x/net/context"
 )
 
 // only keep one ephemeral lease per client
@@ -35,7 +35,7 @@ type clientSessionMgr struct {
 // Fault-tolerant applications may use sessions to reason about liveness.
 type Session struct {
 	client *v3.Client
-	id     lease.LeaseID
+	id     v3.LeaseID
 
 	cancel context.CancelFunc
 	donec  <-chan struct{}
@@ -49,15 +49,14 @@ func NewSession(client *v3.Client) (*Session, error) {
 		return s, nil
 	}
 
-	lc := v3.NewLease(client)
-	resp, err := lc.Create(context.TODO(), sessionTTL)
+	resp, err := client.Create(client.Ctx(), sessionTTL)
 	if err != nil {
 		return nil, err
 	}
-	id := lease.LeaseID(resp.ID)
+	id := v3.LeaseID(resp.ID)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	keepAlive, err := lc.KeepAlive(ctx, id)
+	ctx, cancel := context.WithCancel(client.Ctx())
+	keepAlive, err := client.KeepAlive(ctx, id)
 	if err != nil || keepAlive == nil {
 		return nil, err
 	}
@@ -72,7 +71,6 @@ func NewSession(client *v3.Client) (*Session, error) {
 			clientSessions.mu.Lock()
 			delete(clientSessions.sessions, client)
 			clientSessions.mu.Unlock()
-			lc.Close()
 			close(donec)
 		}()
 		for range keepAlive {
@@ -84,7 +82,7 @@ func NewSession(client *v3.Client) (*Session, error) {
 }
 
 // Lease is the lease ID for keys bound to the session.
-func (s *Session) Lease() lease.LeaseID { return s.id }
+func (s *Session) Lease() v3.LeaseID { return s.id }
 
 // Done returns a channel that closes when the lease is orphaned, expires, or
 // is otherwise no longer being refreshed.
@@ -101,6 +99,6 @@ func (s *Session) Orphan() {
 // Close orphans the session and revokes the session lease.
 func (s *Session) Close() error {
 	s.Orphan()
-	_, err := v3.NewLease(s.client).Revoke(context.TODO(), s.id)
+	_, err := s.client.Revoke(s.client.Ctx(), s.id)
 	return err
 }

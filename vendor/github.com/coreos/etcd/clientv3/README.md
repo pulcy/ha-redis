@@ -16,7 +16,7 @@ Create client using `clientv3.New`:
 
 ```go
 cli, err := clientv3.New(clientv3.Config{
-	Endpoints:   []string{"localhost:12378", "localhost:22378", "localhost:32378"},
+	Endpoints:   []string{"localhost:2379", "localhost:22379", "localhost:32379"},
 	DialTimeout: 5 * time.Second,
 })
 if err != nil {
@@ -40,9 +40,34 @@ if err != nil {
 // use the response
 ```
 
+etcd uses go's `vendor` directory to manage external dependencies. If `clientv3` is imported
+outside of etcd, simply copy `clientv3` to the `vendor` directory or use tools like godep to
+manage your own dependency, as in [vendor directories](https://golang.org/cmd/go/#hdr-Vendor_Directories).
+For more detail, please read [Go vendor design](https://golang.org/s/go15vendor).
+
 ## Error Handling
 
-TODO
+etcd client returns 2 types of errors:
+
+1. context error: canceled or deadline exceeded.
+2. gRPC error: see [v3rpc/error](https://github.com/coreos/etcd/blob/master/etcdserver/api/v3rpc/error.go).
+
+Here is the example code to handle client errors:
+
+```go
+resp, err := kvc.Put(ctx, "", "")
+if err != nil {
+	if err == context.Canceled {
+		// ctx is canceled by another routine
+	} else if err == context.DeadlineExceeded {
+		// ctx is attached with a deadline and it exceeded
+	} else if verr, ok := err.(*v3rpc.ErrEmptyKey); ok {
+		// process (verr.Errors)
+	} else {
+		// bad cluster endpoints, which are not etcd servers
+	}
+}
+```
 
 ## Examples
 

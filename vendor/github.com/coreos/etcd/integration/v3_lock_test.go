@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
 package integration
 
 import (
@@ -18,10 +19,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coreos/etcd/Godeps/_workspace/src/golang.org/x/net/context"
 	"github.com/coreos/etcd/clientv3"
 	"github.com/coreos/etcd/clientv3/concurrency"
 	"github.com/coreos/etcd/contrib/recipes"
+	"golang.org/x/net/context"
 )
 
 func TestMutexSingleNode(t *testing.T) {
@@ -41,7 +42,7 @@ func testMutex(t *testing.T, waiters int, chooseClient func() *clientv3.Client) 
 	lockedC := make(chan *concurrency.Mutex, 1)
 	for i := 0; i < waiters; i++ {
 		go func() {
-			m := concurrency.NewMutex(context.TODO(), chooseClient(), "test-mutex")
+			m := concurrency.NewMutex(chooseClient(), "test-mutex")
 			if err := m.Lock(context.TODO()); err != nil {
 				t.Fatalf("could not wait on lock (%v)", err)
 			}

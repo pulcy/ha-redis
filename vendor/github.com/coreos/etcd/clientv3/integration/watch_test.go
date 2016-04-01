@@ -18,14 +18,17 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/coreos/etcd/Godeps/_workspace/src/golang.org/x/net/context"
 	"github.com/coreos/etcd/clientv3"
+	"github.com/coreos/etcd/etcdserver/api/v3rpc"
+	"github.com/coreos/etcd/etcdserver/api/v3rpc/rpctypes"
 	"github.com/coreos/etcd/integration"
 	"github.com/coreos/etcd/pkg/testutil"
 	storagepb "github.com/coreos/etcd/storage/storagepb"
+	"golang.org/x/net/context"
 )
 
 type watcherTest func(*testing.T, *watchctx)
@@ -157,6 +160,20 @@ func testWatchMultiWatcher(t *testing.T, wctx *watchctx) {
 	}
 }
 
+// TestWatchRange tests watcher creates ranges
+func TestWatchRange(t *testing.T) {
+	runWatchTest(t, testWatchReconnInit)
+}
+
+func testWatchRange(t *testing.T, wctx *watchctx) {
+	if wctx.ch = wctx.w.Watch(context.TODO(), "a", clientv3.WithRange("c")); wctx.ch == nil {
+		t.Fatalf("expected non-nil channel")
+	}
+	putAndWatch(t, wctx, "a", "a")
+	putAndWatch(t, wctx, "b", "b")
+	putAndWatch(t, wctx, "bar", "bar")
+}
+
 // TestWatchReconnRequest tests the send failure path when requesting a watcher.
 func TestWatchReconnRequest(t *testing.T) {
 	runWatchTest(t, testWatchReconnRequest)
@@ -224,6 +241,26 @@ func testWatchReconnRunning(t *testing.T, wctx *watchctx) {
 	wctx.wclient.ActiveConnection().Close()
 	// watcher should recover
 	putAndWatch(t, wctx, "a", "b")
+}
+
+// TestWatchCancelImmediate ensures a closed channel is returned
+// if the context is cancelled.
+func TestWatchCancelImmediate(t *testing.T) {
+	runWatchTest(t, testWatchCancelImmediate)
+}
+
+func testWatchCancelImmediate(t *testing.T, wctx *watchctx) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	wch := wctx.w.Watch(ctx, "a")
+	select {
+	case wresp, ok := <-wch:
+		if ok {
+			t.Fatalf("read wch got %v; expected closed channel", wresp)
+		}
+	default:
+		t.Fatalf("closed watcher channel should not block")
+	}
 }
 
 // TestWatchCancelInit tests watcher closes correctly after no events.
@@ -298,27 +335,99 @@ func putAndWatch(t *testing.T, wctx *watchctx, key, val string) {
 	}
 }
 
-func TestWatchInvalidFutureRevision(t *testing.T) {
+// TestWatchCompactRevision ensures the CompactRevision error is given on a
+// compaction event ahead of a watcher.
+func TestWatchCompactRevision(t *testing.T) {
 	defer testutil.AfterTest(t)
 
 	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
 
+	// set some keys
+	kv := clientv3.NewKV(clus.RandClient())
+	for i := 0; i < 5; i++ {
+		if _, err := kv.Put(context.TODO(), "foo", "bar"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	w := clientv3.NewWatcher(clus.RandClient())
 	defer w.Close()
 
-	rch := w.Watch(context.Background(), "foo", clientv3.WithRev(100))
+	if err := kv.Compact(context.TODO(), 4); err != nil {
+		t.Fatal(err)
+	}
+	wch := w.Watch(context.Background(), "foo", clientv3.WithRev(2))
 
-	wresp, ok := <-rch // WatchResponse from canceled one
+	// get compacted error message
+	wresp, ok := <-wch
 	if !ok {
-		t.Fatalf("expected wresp 'open'(ok true), but got ok %v", ok)
+		t.Fatalf("expected wresp, but got closed channel")
 	}
-	if !wresp.Canceled {
-		t.Fatalf("wresp.Canceled expected 'true', but got %v", wresp.Canceled)
+	if wresp.Err() != rpctypes.ErrCompacted {
+		t.Fatalf("wresp.Err() expected ErrCompacteed, but got %v", wresp.Err())
 	}
 
-	_, ok = <-rch // ensure the channel is closed
-	if ok != false {
-		t.Fatalf("expected wresp 'closed'(ok false), but got ok %v", ok)
+	// ensure the channel is closed
+	if wresp, ok = <-wch; ok {
+		t.Fatalf("expected closed channel, but got %v", wresp)
+	}
+}
+
+func TestWatchWithProgressNotify(t *testing.T)        { testWatchWithProgressNotify(t, true) }
+func TestWatchWithProgressNotifyNoEvent(t *testing.T) { testWatchWithProgressNotify(t, false) }
+
+func testWatchWithProgressNotify(t *testing.T, watchOnPut bool) {
+	defer testutil.AfterTest(t)
+
+	// accelerate report interval so test terminates quickly
+	oldpi := v3rpc.ProgressReportIntervalMilliseconds
+	// using atomics to avoid race warnings
+	atomic.StoreInt32(&v3rpc.ProgressReportIntervalMilliseconds, 3*1000)
+	pi := 3 * time.Second
+	defer func() { v3rpc.ProgressReportIntervalMilliseconds = oldpi }()
+
+	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 3})
+	defer clus.Terminate(t)
+
+	wc := clientv3.NewWatcher(clus.RandClient())
+	defer wc.Close()
+
+	opts := []clientv3.OpOption{clientv3.WithProgressNotify()}
+	if watchOnPut {
+		opts = append(opts, clientv3.WithPrefix())
+	}
+	rch := wc.Watch(context.Background(), "foo", opts...)
+
+	select {
+	case resp := <-rch: // wait for notification
+		if len(resp.Events) != 0 {
+			t.Fatalf("resp.Events expected none, got %+v", resp.Events)
+		}
+	case <-time.After(2 * pi):
+		t.Fatalf("watch response expected in %v, but timed out", pi)
+	}
+
+	kvc := clientv3.NewKV(clus.RandClient())
+	if _, err := kvc.Put(context.TODO(), "foox", "bar"); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case resp := <-rch:
+		if resp.Header.Revision != 2 {
+			t.Fatalf("resp.Header.Revision expected 2, got %d", resp.Header.Revision)
+		}
+		if watchOnPut { // wait for put if watch on the put key
+			ev := []*storagepb.Event{{Type: storagepb.PUT,
+				Kv: &storagepb.KeyValue{Key: []byte("foox"), Value: []byte("bar"), CreateRevision: 2, ModRevision: 2, Version: 1}}}
+			if !reflect.DeepEqual(ev, resp.Events) {
+				t.Fatalf("expected %+v, got %+v", ev, resp.Events)
+			}
+		} else if len(resp.Events) != 0 { // wait for notification otherwise
+			t.Fatalf("expected no events, but got %+v", resp.Events)
+		}
+	case <-time.After(2 * pi):
+		t.Fatalf("watch response expected in %v, but timed out", pi)
 	}
 }

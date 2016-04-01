@@ -12,9 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// TODO: support arm64
+// +build amd64
+
 package etcdmain
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -28,13 +32,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/coreos/etcd/Godeps/_workspace/src/github.com/coreos/go-systemd/daemon"
-	systemdutil "github.com/coreos/etcd/Godeps/_workspace/src/github.com/coreos/go-systemd/util"
-	"github.com/coreos/etcd/Godeps/_workspace/src/github.com/coreos/pkg/capnslog"
-	"github.com/coreos/etcd/Godeps/_workspace/src/github.com/prometheus/client_golang/prometheus"
 	"github.com/coreos/etcd/discovery"
 	"github.com/coreos/etcd/etcdserver"
-	"github.com/coreos/etcd/etcdserver/api/v3rpc"
 	"github.com/coreos/etcd/etcdserver/etcdhttp"
 	"github.com/coreos/etcd/pkg/cors"
 	"github.com/coreos/etcd/pkg/fileutil"
@@ -46,6 +45,10 @@ import (
 	"github.com/coreos/etcd/proxy"
 	"github.com/coreos/etcd/rafthttp"
 	"github.com/coreos/etcd/version"
+	"github.com/coreos/go-systemd/daemon"
+	systemdutil "github.com/coreos/go-systemd/util"
+	"github.com/coreos/pkg/capnslog"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 type dirType string
@@ -200,16 +203,45 @@ func startEtcd(cfg *config) (<-chan struct{}, error) {
 		return nil, fmt.Errorf("error setting up initial cluster: %v", err)
 	}
 
+	if cfg.peerAutoTLS && cfg.peerTLSInfo.Empty() {
+		phosts := make([]string, 0)
+		for _, u := range cfg.lpurls {
+			phosts = append(phosts, u.Host)
+		}
+		cfg.peerTLSInfo, err = transport.SelfCert(cfg.dir, phosts)
+		if err != nil {
+			plog.Fatalf("could not get certs (%v)", err)
+		}
+	} else if cfg.peerAutoTLS {
+		plog.Warningf("ignoring peer auto TLS since certs given")
+	}
+
 	if !cfg.peerTLSInfo.Empty() {
 		plog.Infof("peerTLS: %s", cfg.peerTLSInfo)
 	}
 	plns := make([]net.Listener, 0)
 	for _, u := range cfg.lpurls {
-		if u.Scheme == "http" && !cfg.peerTLSInfo.Empty() {
-			plog.Warningf("The scheme of peer url %s is http while peer key/cert files are presented. Ignored peer key/cert files.", u.String())
+		if u.Scheme == "http" {
+			if !cfg.peerTLSInfo.Empty() {
+				plog.Warningf("The scheme of peer url %s is HTTP while peer key/cert files are presented. Ignored peer key/cert files.", u.String())
+			}
+			if cfg.peerTLSInfo.ClientCertAuth {
+				plog.Warningf("The scheme of peer url %s is HTTP while client cert auth (--peer-client-cert-auth) is enabled. Ignored client cert auth for this url.", u.String())
+			}
 		}
-		var l net.Listener
-		l, err = rafthttp.NewListener(u, cfg.peerTLSInfo)
+		var (
+			l      net.Listener
+			tlscfg *tls.Config
+		)
+
+		if !cfg.peerTLSInfo.Empty() {
+			tlscfg, err = cfg.peerTLSInfo.ServerConfig()
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		l, err = rafthttp.NewListener(u, tlscfg)
 		if err != nil {
 			return nil, err
 		}
@@ -225,75 +257,99 @@ func startEtcd(cfg *config) (<-chan struct{}, error) {
 		plns = append(plns, l)
 	}
 
+	var ctlscfg *tls.Config
 	if !cfg.clientTLSInfo.Empty() {
 		plog.Infof("clientTLS: %s", cfg.clientTLSInfo)
-	}
-	clns := make([]net.Listener, 0)
-	for _, u := range cfg.lcurls {
-		if u.Scheme == "http" && !cfg.clientTLSInfo.Empty() {
-			plog.Warningf("The scheme of client url %s is http while client key/cert files are presented. Ignored client key/cert files.", u.String())
+		ctlscfg, err = cfg.clientTLSInfo.ServerConfig()
+		if err != nil {
+			return nil, err
 		}
+	}
+	sctxs := make(map[string]*serveCtx)
+	for _, u := range cfg.lcurls {
+		if u.Scheme == "http" {
+			if !cfg.clientTLSInfo.Empty() {
+				plog.Warningf("The scheme of client url %s is HTTP while peer key/cert files are presented. Ignored key/cert files.", u.String())
+			}
+			if cfg.clientTLSInfo.ClientCertAuth {
+				plog.Warningf("The scheme of client url %s is HTTP while client cert auth (--client-cert-auth) is enabled. Ignored client cert auth for this url.", u.String())
+			}
+		}
+		if u.Scheme == "https" && ctlscfg == nil {
+			return nil, fmt.Errorf("TLS key/cert (--cert-file, --key-file) must be provided for client url %s with HTTPs scheme", u.String())
+		}
+
+		ctx := &serveCtx{host: u.Host}
+
+		if u.Scheme == "https" {
+			ctx.secure = true
+		} else {
+			ctx.insecure = true
+		}
+
+		if sctxs[u.Host] != nil {
+			if ctx.secure {
+				sctxs[u.Host].secure = true
+			}
+			if ctx.insecure {
+				sctxs[u.Host].insecure = true
+			}
+			continue
+		}
+
 		var l net.Listener
+
 		l, err = net.Listen("tcp", u.Host)
 		if err != nil {
 			return nil, err
 		}
 
-		if fdLimit, err := runtimeutil.FDLimit(); err == nil {
+		var fdLimit uint64
+		if fdLimit, err = runtimeutil.FDLimit(); err == nil {
 			if fdLimit <= reservedInternalFDNum {
 				plog.Fatalf("file descriptor limit[%d] of etcd process is too low, and should be set higher than %d to ensure internal usage", fdLimit, reservedInternalFDNum)
 			}
 			l = transport.LimitListener(l, int(fdLimit-reservedInternalFDNum))
 		}
 
-		// Do not wrap around this listener if TLS Info is set.
-		// HTTPS server expects TLS Conn created by TLSListener.
-		l, err = transport.NewKeepAliveListener(l, u.Scheme, cfg.clientTLSInfo)
+		l, err = transport.NewKeepAliveListener(l, "tcp", nil)
+		ctx.l = l
 		if err != nil {
 			return nil, err
 		}
 
-		urlStr := u.String()
-		plog.Info("listening for client requests on ", urlStr)
+		plog.Info("listening for client requests on ", u.Host)
 		defer func() {
 			if err != nil {
 				l.Close()
-				plog.Info("stopping listening for client requests on ", urlStr)
+				plog.Info("stopping listening for client requests on ", u.Host)
 			}
 		}()
-		clns = append(clns, l)
-	}
-
-	var v3l net.Listener
-	if cfg.v3demo {
-		v3l, err = net.Listen("tcp", cfg.gRPCAddr)
-		if err != nil {
-			plog.Fatal(err)
-		}
-		plog.Infof("listening for client rpc on %s", cfg.gRPCAddr)
+		sctxs[u.Host] = ctx
 	}
 
 	srvcfg := &etcdserver.ServerConfig{
-		Name:                cfg.name,
-		ClientURLs:          cfg.acurls,
-		PeerURLs:            cfg.apurls,
-		DataDir:             cfg.dir,
-		DedicatedWALDir:     cfg.walDir,
-		SnapCount:           cfg.snapCount,
-		MaxSnapFiles:        cfg.maxSnapFiles,
-		MaxWALFiles:         cfg.maxWalFiles,
-		InitialPeerURLsMap:  urlsmap,
-		InitialClusterToken: token,
-		DiscoveryURL:        cfg.durl,
-		DiscoveryProxy:      cfg.dproxy,
-		NewCluster:          cfg.isNewCluster(),
-		ForceNewCluster:     cfg.forceNewCluster,
-		PeerTLSInfo:         cfg.peerTLSInfo,
-		TickMs:              cfg.TickMs,
-		ElectionTicks:       cfg.electionTicks(),
-		V3demo:              cfg.v3demo,
-		StrictReconfigCheck: cfg.strictReconfigCheck,
-		EnablePprof:         cfg.enablePprof,
+		Name:                    cfg.name,
+		ClientURLs:              cfg.acurls,
+		PeerURLs:                cfg.apurls,
+		DataDir:                 cfg.dir,
+		DedicatedWALDir:         cfg.walDir,
+		SnapCount:               cfg.snapCount,
+		MaxSnapFiles:            cfg.maxSnapFiles,
+		MaxWALFiles:             cfg.maxWalFiles,
+		InitialPeerURLsMap:      urlsmap,
+		InitialClusterToken:     token,
+		DiscoveryURL:            cfg.durl,
+		DiscoveryProxy:          cfg.dproxy,
+		NewCluster:              cfg.isNewCluster(),
+		ForceNewCluster:         cfg.forceNewCluster,
+		PeerTLSInfo:             cfg.peerTLSInfo,
+		TickMs:                  cfg.TickMs,
+		ElectionTicks:           cfg.electionTicks(),
+		AutoCompactionRetention: cfg.autoCompactionRetention,
+		QuotaBackendBytes:       cfg.quotaBackendBytes,
+		StrictReconfigCheck:     cfg.strictReconfigCheck,
+		EnablePprof:             cfg.enablePprof,
 	}
 	var s *etcdserver.EtcdServer
 	s, err = etcdserver.NewServer(srvcfg)
@@ -306,39 +362,25 @@ func startEtcd(cfg *config) (<-chan struct{}, error) {
 	if cfg.corsInfo.String() != "" {
 		plog.Infof("cors = %s", cfg.corsInfo)
 	}
-	ch := &cors.CORSHandler{
+	ch := http.Handler(&cors.CORSHandler{
 		Handler: etcdhttp.NewClientHandler(s, srvcfg.ReqTimeout()),
 		Info:    cfg.corsInfo,
-	}
+	})
 	ph := etcdhttp.NewPeerHandler(s)
+
 	// Start the peer server in a goroutine
 	for _, l := range plns {
 		go func(l net.Listener) {
-			plog.Fatal(serveHTTP(l, ph, 5*time.Minute))
+			plog.Fatal(servePeerHTTP(l, ph))
 		}(l)
 	}
 	// Start a client server goroutine for each listen address
-	for _, l := range clns {
-		go func(l net.Listener) {
+	for _, sctx := range sctxs {
+		go func(sctx *serveCtx) {
 			// read timeout does not work with http close notify
 			// TODO: https://github.com/golang/go/issues/9524
-			plog.Fatal(serveHTTP(l, ch, 0))
-		}(l)
-	}
-
-	if cfg.v3demo {
-		// set up v3 demo rpc
-		tls := &cfg.clientTLSInfo
-		if cfg.clientTLSInfo.Empty() {
-			tls = nil
-		}
-		grpcServer, err := v3rpc.Server(s, tls)
-		if err != nil {
-			s.Stop()
-			<-s.StopNotify()
-			return nil, err
-		}
-		go func() { plog.Fatal(grpcServer.Serve(v3l)) }()
+			plog.Fatal(serve(sctx, s, ctlscfg, ch))
+		}(sctx)
 	}
 
 	return s.StopNotify(), nil
@@ -383,13 +425,15 @@ func startProxy(cfg *config) error {
 		peerURLs = urls.PeerURLs
 		plog.Infof("proxy: using peer urls %v from cluster file %q", peerURLs, clusterfile)
 	case os.IsNotExist(err):
-		urlsmap, _, err := getPeerURLsMapAndToken(cfg, "proxy")
+		var urlsmap types.URLsMap
+		urlsmap, _, err = getPeerURLsMapAndToken(cfg, "proxy")
 		if err != nil {
 			return fmt.Errorf("error setting up initial cluster: %v", err)
 		}
 
 		if cfg.durl != "" {
-			s, err := discovery.GetCluster(cfg.durl, cfg.dproxy)
+			var s string
+			s, err = discovery.GetCluster(cfg.durl, cfg.dproxy)
 			if err != nil {
 				return err
 			}
@@ -405,11 +449,11 @@ func startProxy(cfg *config) error {
 
 	clientURLs := []string{}
 	uf := func() []string {
-		gcls, err := etcdserver.GetClusterFromRemotePeers(peerURLs, tr)
+		gcls, gerr := etcdserver.GetClusterFromRemotePeers(peerURLs, tr)
 		// TODO: remove the 2nd check when we fix GetClusterFromRemotePeers
 		// GetClusterFromRemotePeers should not return nil error with an invalid empty cluster
-		if err != nil {
-			plog.Warningf("proxy: %v", err)
+		if gerr != nil {
+			plog.Warningf("proxy: %v", gerr)
 			return []string{}
 		}
 		if len(gcls.Members()) == 0 {
@@ -418,9 +462,9 @@ func startProxy(cfg *config) error {
 		clientURLs = gcls.ClientURLs()
 
 		urls := struct{ PeerURLs []string }{gcls.PeerURLs()}
-		b, err := json.Marshal(urls)
-		if err != nil {
-			plog.Warningf("proxy: error on marshal peer urls %s", err)
+		b, jerr := json.Marshal(urls)
+		if jerr != nil {
+			plog.Warningf("proxy: error on marshal peer urls %s", jerr)
 			return clientURLs
 		}
 
@@ -452,7 +496,18 @@ func startProxy(cfg *config) error {
 	}
 	// Start a proxy server goroutine for each listen address
 	for _, u := range cfg.lcurls {
-		l, err := transport.NewListener(u.Host, u.Scheme, cfg.clientTLSInfo)
+		var (
+			l      net.Listener
+			tlscfg *tls.Config
+		)
+		if !cfg.clientTLSInfo.Empty() {
+			tlscfg, err = cfg.clientTLSInfo.ServerConfig()
+			if err != nil {
+				return err
+			}
+		}
+
+		l, err := transport.NewListener(u.Host, u.Scheme, tlscfg)
 		if err != nil {
 			return err
 		}

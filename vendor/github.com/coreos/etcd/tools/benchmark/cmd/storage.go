@@ -18,10 +18,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/coreos/etcd/Godeps/_workspace/src/github.com/spf13/cobra"
 	"github.com/coreos/etcd/lease"
 	"github.com/coreos/etcd/storage"
 	"github.com/coreos/etcd/storage/backend"
+	"github.com/spf13/cobra"
 )
 
 var (
@@ -33,7 +33,7 @@ var (
 
 func initStorage() {
 	be := backend.New("storage-bench", time.Duration(batchInterval), batchLimit)
-	s = storage.NewStore(be, &lease.FakeLessor{})
+	s = storage.NewStore(be, &lease.FakeLessor{}, nil)
 	os.Remove("storage-bench") // boltDB has an opened fd, so removing the file is ok
 }
 

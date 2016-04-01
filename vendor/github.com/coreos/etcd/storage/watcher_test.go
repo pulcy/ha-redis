@@ -16,7 +16,10 @@ package storage
 
 import (
 	"bytes"
+	"os"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/coreos/etcd/lease"
 	"github.com/coreos/etcd/storage/backend"
@@ -26,7 +29,7 @@ import (
 // and the watched event attaches the correct watchID.
 func TestWatcherWatchID(t *testing.T) {
 	b, tmpPath := backend.NewDefaultTmpBackend()
-	s := WatchableKV(newWatchableStore(b, &lease.FakeLessor{}))
+	s := WatchableKV(newWatchableStore(b, &lease.FakeLessor{}, nil))
 	defer cleanup(s, b, tmpPath)
 
 	w := s.NewWatchStream()
@@ -35,7 +38,7 @@ func TestWatcherWatchID(t *testing.T) {
 	idm := make(map[WatchID]struct{})
 
 	for i := 0; i < 10; i++ {
-		id := w.Watch([]byte("foo"), false, 0)
+		id := w.Watch([]byte("foo"), nil, 0)
 		if _, ok := idm[id]; ok {
 			t.Errorf("#%d: id %d exists", i, id)
 		}
@@ -57,7 +60,7 @@ func TestWatcherWatchID(t *testing.T) {
 
 	// unsynced watchers
 	for i := 10; i < 20; i++ {
-		id := w.Watch([]byte("foo2"), false, 1)
+		id := w.Watch([]byte("foo2"), nil, 1)
 		if _, ok := idm[id]; ok {
 			t.Errorf("#%d: id %d exists", i, id)
 		}
@@ -78,7 +81,7 @@ func TestWatcherWatchID(t *testing.T) {
 // and returns events with matching prefixes.
 func TestWatcherWatchPrefix(t *testing.T) {
 	b, tmpPath := backend.NewDefaultTmpBackend()
-	s := WatchableKV(newWatchableStore(b, &lease.FakeLessor{}))
+	s := WatchableKV(newWatchableStore(b, &lease.FakeLessor{}, nil))
 	defer cleanup(s, b, tmpPath)
 
 	w := s.NewWatchStream()
@@ -86,12 +89,11 @@ func TestWatcherWatchPrefix(t *testing.T) {
 
 	idm := make(map[WatchID]struct{})
 
-	prefixMatch := true
 	val := []byte("bar")
-	keyWatch, keyPut := []byte("foo"), []byte("foobar")
+	keyWatch, keyEnd, keyPut := []byte("foo"), []byte("fop"), []byte("foobar")
 
 	for i := 0; i < 10; i++ {
-		id := w.Watch(keyWatch, prefixMatch, 0)
+		id := w.Watch(keyWatch, keyEnd, 0)
 		if _, ok := idm[id]; ok {
 			t.Errorf("#%d: unexpected duplicated id %x", i, id)
 		}
@@ -118,12 +120,12 @@ func TestWatcherWatchPrefix(t *testing.T) {
 		}
 	}
 
-	keyWatch1, keyPut1 := []byte("foo1"), []byte("foo1bar")
+	keyWatch1, keyEnd1, keyPut1 := []byte("foo1"), []byte("foo2"), []byte("foo1bar")
 	s.Put(keyPut1, val, lease.NoLease)
 
 	// unsynced watchers
 	for i := 10; i < 15; i++ {
-		id := w.Watch(keyWatch1, prefixMatch, 1)
+		id := w.Watch(keyWatch1, keyEnd1, 1)
 		if _, ok := idm[id]; ok {
 			t.Errorf("#%d: id %d exists", i, id)
 		}
@@ -153,13 +155,13 @@ func TestWatcherWatchPrefix(t *testing.T) {
 // with given id inside watchStream.
 func TestWatchStreamCancelWatcherByID(t *testing.T) {
 	b, tmpPath := backend.NewDefaultTmpBackend()
-	s := WatchableKV(newWatchableStore(b, &lease.FakeLessor{}))
+	s := WatchableKV(newWatchableStore(b, &lease.FakeLessor{}, nil))
 	defer cleanup(s, b, tmpPath)
 
 	w := s.NewWatchStream()
 	defer w.Close()
 
-	id := w.Watch([]byte("foo"), false, 0)
+	id := w.Watch([]byte("foo"), nil, 0)
 
 	tests := []struct {
 		cancelID WatchID
@@ -183,5 +185,62 @@ func TestWatchStreamCancelWatcherByID(t *testing.T) {
 
 	if l := len(w.(*watchStream).cancels); l != 0 {
 		t.Errorf("cancels = %d, want 0", l)
+	}
+}
+
+// TestWatcherRequestProgress ensures synced watcher can correctly
+// report its correct progress.
+func TestWatcherRequestProgress(t *testing.T) {
+	b, tmpPath := backend.NewDefaultTmpBackend()
+
+	// manually create watchableStore instead of newWatchableStore
+	// because newWatchableStore automatically calls syncWatchers
+	// method to sync watchers in unsynced map. We want to keep watchers
+	// in unsynced to test if syncWatchers works as expected.
+	s := &watchableStore{
+		store:    NewStore(b, &lease.FakeLessor{}, nil),
+		unsynced: newWatcherGroup(),
+		synced:   newWatcherGroup(),
+	}
+
+	defer func() {
+		s.store.Close()
+		os.Remove(tmpPath)
+	}()
+
+	testKey := []byte("foo")
+	notTestKey := []byte("bad")
+	testValue := []byte("bar")
+	s.Put(testKey, testValue, lease.NoLease)
+
+	w := s.NewWatchStream()
+
+	badID := WatchID(1000)
+	w.RequestProgress(badID)
+	select {
+	case resp := <-w.Chan():
+		t.Fatalf("unexpected %+v", resp)
+	default:
+	}
+
+	id := w.Watch(notTestKey, nil, 1)
+	w.RequestProgress(id)
+	select {
+	case resp := <-w.Chan():
+		t.Fatalf("unexpected %+v", resp)
+	default:
+	}
+
+	s.syncWatchers()
+
+	w.RequestProgress(id)
+	wrs := WatchResponse{WatchID: 0, Revision: 2}
+	select {
+	case resp := <-w.Chan():
+		if !reflect.DeepEqual(resp, wrs) {
+			t.Fatalf("got %+v, expect %+v", resp, wrs)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("failed to receive progress")
 	}
 }

@@ -32,7 +32,7 @@ import (
 
 func TestStoreRev(t *testing.T) {
 	b, tmpPath := backend.NewDefaultTmpBackend()
-	s := NewStore(b, &lease.FakeLessor{})
+	s := NewStore(b, &lease.FakeLessor{}, nil)
 	defer s.Close()
 	defer os.Remove(tmpPath)
 
@@ -139,13 +139,13 @@ func TestStorePut(t *testing.T) {
 		}
 
 		wact := []testutil.Action{
-			{"put", []interface{}{keyBucketName, tt.wkey, data}},
+			{"seqput", []interface{}{keyBucketName, tt.wkey, data}},
 		}
 
 		if tt.rr != nil {
 			wact = []testutil.Action{
 				{"range", []interface{}{keyBucketName, newTestKeyBytes(tt.r.rev, false), []byte(nil), int64(0)}},
-				{"put", []interface{}{keyBucketName, tt.wkey, data}},
+				{"seqput", []interface{}{keyBucketName, tt.wkey, data}},
 			}
 		}
 
@@ -305,7 +305,7 @@ func TestStoreDeleteRange(t *testing.T) {
 			t.Errorf("#%d: marshal err = %v, want nil", i, err)
 		}
 		wact := []testutil.Action{
-			{"put", []interface{}{keyBucketName, tt.wkey, data}},
+			{"seqput", []interface{}{keyBucketName, tt.wkey, data}},
 			{"range", []interface{}{keyBucketName, newTestKeyBytes(revision{2, 0}, false), []byte(nil), int64(0)}},
 		}
 		if g := b.tx.Action(); !reflect.DeepEqual(g, wact) {
@@ -418,7 +418,7 @@ func TestStoreRestore(t *testing.T) {
 
 func TestRestoreContinueUnfinishedCompaction(t *testing.T) {
 	b, tmpPath := backend.NewDefaultTmpBackend()
-	s0 := NewStore(b, &lease.FakeLessor{})
+	s0 := NewStore(b, &lease.FakeLessor{}, nil)
 	defer os.Remove(tmpPath)
 
 	s0.Put([]byte("foo"), []byte("bar"), lease.NoLease)
@@ -435,7 +435,7 @@ func TestRestoreContinueUnfinishedCompaction(t *testing.T) {
 
 	s0.Close()
 
-	s1 := NewStore(b, &lease.FakeLessor{})
+	s1 := NewStore(b, &lease.FakeLessor{}, nil)
 
 	// wait for scheduled compaction to be finished
 	time.Sleep(100 * time.Millisecond)
@@ -473,7 +473,7 @@ func TestTxnPut(t *testing.T) {
 	vals := createBytesSlice(bytesN, sliceN)
 
 	b, tmpPath := backend.NewDefaultTmpBackend()
-	s := NewStore(b, &lease.FakeLessor{})
+	s := NewStore(b, &lease.FakeLessor{}, nil)
 	defer cleanup(s, b, tmpPath)
 
 	for i := 0; i < sliceN; i++ {
@@ -494,7 +494,7 @@ func TestTxnPut(t *testing.T) {
 
 func TestTxnBlockBackendForceCommit(t *testing.T) {
 	b, tmpPath := backend.NewDefaultTmpBackend()
-	s := NewStore(b, &lease.FakeLessor{})
+	s := NewStore(b, &lease.FakeLessor{}, nil)
 	defer os.Remove(tmpPath)
 
 	id := s.TxnBegin()
@@ -573,6 +573,9 @@ func (b *fakeBatchTx) UnsafeCreateBucket(name []byte) {}
 func (b *fakeBatchTx) UnsafePut(bucketName []byte, key []byte, value []byte) {
 	b.Recorder.Record(testutil.Action{Name: "put", Params: []interface{}{bucketName, key, value}})
 }
+func (b *fakeBatchTx) UnsafeSeqPut(bucketName []byte, key []byte, value []byte) {
+	b.Recorder.Record(testutil.Action{Name: "seqput", Params: []interface{}{bucketName, key, value}})
+}
 func (b *fakeBatchTx) UnsafeRange(bucketName []byte, key, endKey []byte, limit int64) (keys [][]byte, vals [][]byte) {
 	b.Recorder.Record(testutil.Action{Name: "range", Params: []interface{}{bucketName, key, endKey, limit}})
 	r := <-b.rangeRespc
@@ -580,6 +583,9 @@ func (b *fakeBatchTx) UnsafeRange(bucketName []byte, key, endKey []byte, limit i
 }
 func (b *fakeBatchTx) UnsafeDelete(bucketName []byte, key []byte) {
 	b.Recorder.Record(testutil.Action{Name: "delete", Params: []interface{}{bucketName, key}})
+}
+func (b *fakeBatchTx) UnsafeForEach(bucketName []byte, visitor func(k, v []byte) error) error {
+	return nil
 }
 func (b *fakeBatchTx) Commit()        {}
 func (b *fakeBatchTx) CommitAndStop() {}
@@ -593,6 +599,7 @@ func (b *fakeBackend) Hash() (uint32, error)      { return 0, nil }
 func (b *fakeBackend) Size() int64                { return 0 }
 func (b *fakeBackend) Snapshot() backend.Snapshot { return nil }
 func (b *fakeBackend) ForceCommit()               {}
+func (b *fakeBackend) Defrag() error              { return nil }
 func (b *fakeBackend) Close() error               { return nil }
 
 type indexGetResp struct {

@@ -21,8 +21,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/coreos/etcd/Godeps/_workspace/src/golang.org/x/net/context"
-	"github.com/coreos/etcd/Godeps/_workspace/src/google.golang.org/grpc"
+	"golang.org/x/net/context"
+	"google.golang.org/grpc"
 
 	clientv2 "github.com/coreos/etcd/client"
 	"github.com/coreos/etcd/clientv3"
@@ -89,7 +89,7 @@ func (c *cluster) Bootstrap() error {
 		if err != nil {
 			return err
 		}
-		grpcURLs[i] = fmt.Sprintf("%s:2378", host)
+		grpcURLs[i] = fmt.Sprintf("%s:2379", host)
 		clientURLs[i] = fmt.Sprintf("http://%s:2379", host)
 		peerURLs[i] = fmt.Sprintf("http://%s:%d", host, peerURLPort)
 
@@ -113,12 +113,6 @@ func (c *cluster) Bootstrap() error {
 			"--initial-cluster", clusterStr,
 			"--initial-cluster-state", "new",
 		}
-		if !c.v2Only {
-			flags = append(flags,
-				"--experimental-v3demo",
-				"--experimental-gRPC-addr", grpcURLs[i],
-			)
-		}
 
 		if _, err := a.Start(flags...); err != nil {
 			// cleanup
@@ -129,6 +123,9 @@ func (c *cluster) Bootstrap() error {
 		}
 	}
 
+	// TODO: Too intensive stressers can panic etcd member with
+	// 'out of memory' error. Put rate limits in server side.
+	stressN := 100
 	var stressers []Stresser
 	if c.v2Only {
 		for _, u := range clientURLs {
@@ -136,7 +133,7 @@ func (c *cluster) Bootstrap() error {
 				Endpoint:       u,
 				KeySize:        c.stressKeySize,
 				KeySuffixRange: c.stressKeySuffixRange,
-				N:              200,
+				N:              stressN,
 			}
 			go s.Stress()
 			stressers = append(stressers, s)
@@ -147,7 +144,7 @@ func (c *cluster) Bootstrap() error {
 				Endpoint:       u,
 				KeySize:        c.stressKeySize,
 				KeySuffixRange: c.stressKeySuffixRange,
-				N:              200,
+				N:              stressN,
 			}
 			go s.Stress()
 			stressers = append(stressers, s)
@@ -306,9 +303,9 @@ func (c *cluster) getRevisionHash() (map[string]int64, map[string]int64, error) 
 		if err != nil {
 			return nil, nil, err
 		}
-		kvc := pb.NewKVClient(conn)
+		m := pb.NewMaintenanceClient(conn)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		resp, err := kvc.Hash(ctx, &pb.HashRequest{})
+		resp, err := m.Hash(ctx, &pb.HashRequest{})
 		cancel()
 		conn.Close()
 		if err != nil {
@@ -325,19 +322,57 @@ func (c *cluster) compactKV(rev int64) error {
 		conn *grpc.ClientConn
 		err  error
 	)
-	for _, u := range c.GRPCURLs {
+
+	if rev <= 0 {
+		return nil
+	}
+
+	for i, u := range c.GRPCURLs {
 		conn, err = grpc.Dial(u, grpc.WithInsecure(), grpc.WithTimeout(5*time.Second))
 		if err != nil {
 			continue
 		}
 		kvc := pb.NewKVClient(conn)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_, err = kvc.Compact(ctx, &pb.CompactionRequest{Revision: rev})
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_, err = kvc.Compact(ctx, &pb.CompactionRequest{Revision: rev, Physical: true})
 		cancel()
 		conn.Close()
-		if err == nil {
-			return nil
+		if err != nil {
+			if strings.Contains(err.Error(), "required revision has been compacted") && i > 0 {
+				plog.Printf("%s is already compacted with %d (%v)", u, rev, err)
+				err = nil // in case compact was requested more than once
+			}
 		}
 	}
 	return err
+}
+
+func (c *cluster) checkCompact(rev int64) error {
+	if rev == 0 {
+		return nil
+	}
+	for _, u := range c.GRPCURLs {
+		cli, err := clientv3.New(clientv3.Config{
+			Endpoints:   []string{u},
+			DialTimeout: 5 * time.Second,
+		})
+		if err != nil {
+			return err
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		wch := cli.Watch(ctx, "\x00", clientv3.WithFromKey(), clientv3.WithRev(rev-1))
+		wr, ok := <-wch
+		cancel()
+
+		cli.Close()
+
+		if !ok {
+			return fmt.Errorf("watch channel terminated")
+		}
+		if wr.CompactRevision != rev {
+			return fmt.Errorf("got compact revision %v, wanted %v", wr.CompactRevision, rev)
+		}
+	}
+	return nil
 }

@@ -55,7 +55,7 @@ func (s *Service) updateMaster() error {
 			PrevValue: s.ourRedisUrl,
 			PrevExist: client.PrevExist,
 			TTL:       s.MasterTTL,
-			Refresh:   true,
+			//Refresh:   true,
 		}
 		if _, err := kAPI.Set(context.Background(), s.masterKey, s.ourRedisUrl, options); err != nil {
 			// An error occurred

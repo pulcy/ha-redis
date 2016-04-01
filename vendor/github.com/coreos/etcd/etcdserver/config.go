@@ -50,7 +50,8 @@ type ServerConfig struct {
 	ElectionTicks    int
 	BootstrapTimeout time.Duration
 
-	V3demo bool
+	AutoCompactionRetention int
+	QuotaBackendBytes       int64
 
 	StrictReconfigCheck bool
 
@@ -131,6 +132,10 @@ func (c *ServerConfig) ReqTimeout() time.Duration {
 	// 5s for queue waiting, computation and disk IO delay
 	// + 2 * election timeout for possible leader election
 	return 5*time.Second + 2*time.Duration(c.ElectionTicks)*time.Duration(c.TickMs)*time.Millisecond
+}
+
+func (c *ServerConfig) electionTimeout() time.Duration {
+	return time.Duration(c.ElectionTicks) * time.Duration(c.TickMs) * time.Millisecond
 }
 
 func (c *ServerConfig) peerDialTimeout() time.Duration {

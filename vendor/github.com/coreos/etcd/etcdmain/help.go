@@ -49,7 +49,7 @@ member flags:
 		maximum number of snapshot files to retain (0 is unlimited).
 	--max-wals '` + strconv.Itoa(defaultMaxWALs) + `'
 		maximum number of wal files to retain (0 is unlimited).
-	-cors ''
+	--cors ''
 		comma-separated whitelist of origins for CORS (cross-origin resource sharing).
 
 
@@ -116,6 +116,8 @@ security flags:
 		enable peer client cert authentication.
 	--peer-trusted-ca-file ''
 		path to the peer server TLS trusted CA file.
+	--peer-auto-tls 'false'
+		peer TLS using self-generated certificates if --peer-key-file and --peer-cert-file are not provided.
 
 logging flags
 
@@ -135,10 +137,8 @@ given by the consensus protocol.
 
 experimental flags:
 
-	--experimental-v3demo 'false'
-		enable experimental v3 demo API.
-	--experimental-gRPC-addr '127.0.0.1:2378'
-		gRPC address for experimental v3 demo API.
+	--experimental-auto-compaction-retention '0'
+		auto compaction retention in hour. 0 means disable auto compaction.
 
 profiling flags:
 	--enable-pprof 'false'

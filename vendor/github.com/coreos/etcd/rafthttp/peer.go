@@ -18,12 +18,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/coreos/etcd/Godeps/_workspace/src/golang.org/x/net/context"
 	"github.com/coreos/etcd/etcdserver/stats"
 	"github.com/coreos/etcd/pkg/types"
 	"github.com/coreos/etcd/raft"
 	"github.com/coreos/etcd/raft/raftpb"
 	"github.com/coreos/etcd/snap"
+	"golang.org/x/net/context"
 )
 
 const (
@@ -92,9 +92,8 @@ type Peer interface {
 // It is only used when the stream has not been established.
 type peer struct {
 	// id of the remote raft peer node
-	id     types.ID
-	r      Raft
-	v3demo bool
+	id types.ID
+	r  Raft
 
 	status *peerStatus
 
@@ -118,13 +117,12 @@ type peer struct {
 	stopc  chan struct{}
 }
 
-func startPeer(transport *Transport, urls types.URLs, local, to, cid types.ID, r Raft, fs *stats.FollowerStats, errorc chan error, v3demo bool) *peer {
+func startPeer(transport *Transport, urls types.URLs, local, to, cid types.ID, r Raft, fs *stats.FollowerStats, errorc chan error) *peer {
 	status := newPeerStatus(to)
 	picker := newURLPicker(urls)
 	p := &peer{
 		id:             to,
 		r:              r,
-		v3demo:         v3demo,
 		status:         status,
 		picker:         picker,
 		msgAppV2Writer: startStreamWriter(to, status, fs, r),
@@ -142,11 +140,23 @@ func startPeer(transport *Transport, urls types.URLs, local, to, cid types.ID, r
 	go func() {
 		for {
 			select {
-			case mm := <-p.propc:
+			case mm := <-p.recvc:
 				if err := r.Process(ctx, mm); err != nil {
 					plog.Warningf("failed to process raft message (%v)", err)
 				}
-			case mm := <-p.recvc:
+			case <-p.stopc:
+				return
+			}
+		}
+	}()
+
+	// r.Process might block for processing proposal when there is no leader.
+	// Thus propc must be put into a separate routine with recvc to avoid blocking
+	// processing other raft messages.
+	go func() {
+		for {
+			select {
+			case mm := <-p.propc:
 				if err := r.Process(ctx, mm); err != nil {
 					plog.Warningf("failed to process raft message (%v)", err)
 				}
@@ -217,6 +227,8 @@ func (p *peer) Pause() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.paused = true
+	p.msgAppReader.pause()
+	p.msgAppV2Reader.pause()
 }
 
 // Resume resumes a paused peer.
@@ -224,6 +236,8 @@ func (p *peer) Resume() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.paused = false
+	p.msgAppReader.resume()
+	p.msgAppV2Reader.resume()
 }
 
 func (p *peer) stop() {

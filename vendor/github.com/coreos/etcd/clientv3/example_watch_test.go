@@ -18,8 +18,8 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/coreos/etcd/Godeps/_workspace/src/golang.org/x/net/context"
 	"github.com/coreos/etcd/clientv3"
+	"golang.org/x/net/context"
 )
 
 func ExampleWatcher_watch() {
@@ -32,10 +32,7 @@ func ExampleWatcher_watch() {
 	}
 	defer cli.Close()
 
-	wc := clientv3.NewWatcher(cli)
-	defer wc.Close()
-
-	rch := wc.Watch(context.Background(), "foo")
+	rch := cli.Watch(context.Background(), "foo")
 	for wresp := range rch {
 		for _, ev := range wresp.Events {
 			fmt.Printf("%s %q : %q\n", ev.Type, ev.Kv.Key, ev.Kv.Value)
@@ -54,14 +51,28 @@ func ExampleWatcher_watchPrefix() {
 	}
 	defer cli.Close()
 
-	wc := clientv3.NewWatcher(cli)
-	defer wc.Close()
-
-	rch := wc.Watch(context.Background(), "foo", clientv3.WithPrefix())
+	rch := cli.Watch(context.Background(), "foo", clientv3.WithPrefix())
 	for wresp := range rch {
 		for _, ev := range wresp.Events {
 			fmt.Printf("%s %q : %q\n", ev.Type, ev.Kv.Key, ev.Kv.Value)
 		}
 	}
 	// PUT "foo1" : "bar"
+}
+
+func ExampleWatcher_watchProgressNotify() {
+	cli, err := clientv3.New(clientv3.Config{
+		Endpoints:   endpoints,
+		DialTimeout: dialTimeout,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	rch := cli.Watch(context.Background(), "foo", clientv3.WithProgressNotify())
+	wresp := <-rch
+	fmt.Printf("wresp.Header.Revision: %d\n", wresp.Header.Revision)
+	fmt.Println("wresp.IsProgressNotify:", wresp.IsProgressNotify())
+	// wresp.Header.Revision: 0
+	// wresp.IsProgressNotify: true
 }

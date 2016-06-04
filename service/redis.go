@@ -28,6 +28,7 @@ import (
 // Start the redis process
 func (s *Service) startRedis(exitChan chan int) (*exec.Cmd, error) {
 	args := []string{}
+	args = append(args, "--protected-mode", "no")
 	if s.RedisAppendOnly {
 		args = append(args, "--appendonly", "yes")
 	}

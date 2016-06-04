@@ -48,10 +48,11 @@ type Service struct {
 	ServiceConfig
 	ServiceDependencies
 
-	client      client.Client
-	watcher     client.Watcher
-	masterKey   string
-	ourRedisUrl string
+	client              client.Client
+	masterWatcher       client.Watcher
+	recentWatcherErrors int
+	masterKey           string
+	ourRedisUrl         string
 }
 
 // NewService initializes a new Service.
@@ -71,18 +72,12 @@ func NewService(config ServiceConfig, deps ServiceDependencies) (*Service, error
 	if err != nil {
 		return nil, maskAny(err)
 	}
-	kAPI := client.NewKeysAPI(c)
-	options := &client.WatcherOptions{
-		Recursive: false,
-	}
-	watcher := kAPI.Watcher(masterKey, options)
 
 	return &Service{
 		ServiceConfig:       config,
 		ServiceDependencies: deps,
 
 		client:    c,
-		watcher:   watcher,
 		masterKey: masterKey,
 	}, nil
 }

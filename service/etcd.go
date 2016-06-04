@@ -22,6 +22,10 @@ import (
 	"golang.org/x/net/context"
 )
 
+const (
+	maxRecentWatcherErrors = 5 // Number of recent errors before the watcher is discarded and rebuild
+)
+
 // tryBecomeMaster tries to create a value in ETCD under the master key.
 // On success, we're the master, otherwise we're the slave.
 func (s *Service) tryBecomeMaster() (bool, string, error) {
@@ -101,10 +105,20 @@ func (s *Service) removeMaster() error {
 // It will return as soon as a master change was detected.
 func (s *Service) watchForMasterChanges(masterURL string) error {
 	for {
-		resp, err := s.watcher.Next(context.Background())
+		if s.masterWatcher == nil || s.recentWatcherErrors > maxRecentWatcherErrors {
+			kAPI := client.NewKeysAPI(s.client)
+			options := &client.WatcherOptions{
+				Recursive: false,
+			}
+			s.recentWatcherErrors = 0
+			s.masterWatcher = kAPI.Watcher(s.masterKey, options)
+		}
+		resp, err := s.masterWatcher.Next(context.Background())
 		if err != nil {
+			s.recentWatcherErrors++
 			return maskAny(err)
 		}
+		s.recentWatcherErrors = 0
 		if resp.Node == nil {
 			s.Logger.Infof("Change detected, node=nil: %#v", resp)
 			return nil

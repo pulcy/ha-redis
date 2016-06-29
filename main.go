@@ -35,7 +35,7 @@ const (
 var (
 	projectVersion   = "dev"
 	projectBuild     = "dev"
-	defaultMasterTTL = time.Second * 30
+	defaultMasterTTL = time.Minute
 	defaultLogLevel  = "info"
 )
 

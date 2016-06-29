@@ -55,6 +55,7 @@ update-vendor:
 		github.com/giantswarm/retry-go \
 		github.com/juju/errgo \
 		github.com/op/go-logging \
+		github.com/prometheus/client_golang/prometheus \
 		github.com/spf13/cobra \
 		github.com/spf13/pflag \
 		golang.org/x/net/context

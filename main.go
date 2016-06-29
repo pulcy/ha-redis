@@ -17,12 +17,14 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/op/go-logging"
 	"github.com/spf13/cobra"
 
+	"github.com/pulcy/ha-redis/middleware"
 	"github.com/pulcy/ha-redis/service"
 )
 
@@ -38,6 +40,8 @@ var (
 	defaultMasterTTL           = time.Minute
 	defaultLogLevel            = "info"
 	defaultRedisAppendOnlyPath = "/data/appendonly.aof"
+	defaultHost                = "127.0.0.1"
+	defaultPort                = 8080
 )
 
 var (
@@ -48,6 +52,8 @@ var (
 	}
 	log   = logging.MustGetLogger(projectName)
 	flags struct {
+		Host string
+		Port int
 		service.ServiceConfig
 		logLevel string
 	}
@@ -55,6 +61,8 @@ var (
 
 func init() {
 	logging.SetFormatter(logging.MustStringFormatter("[%{level:-5s}] %{message}"))
+	cmdMain.Flags().StringVar(&flags.Host, "host", defaultHost, "IP address to bind to")
+	cmdMain.Flags().IntVar(&flags.Port, "port", defaultPort, "Port to listen on")
 	cmdMain.Flags().StringVar(&flags.AnnounceIP, "announce-ip", "", "IP address of master to announce when becoming a master")
 	cmdMain.Flags().IntVar(&flags.AnnouncePort, "announce-port", 6379, "Port of master to announce when becoming a master")
 	cmdMain.Flags().StringVar(&flags.RedisConf, "redis-conf", "", "Path of redis configuration file")
@@ -99,6 +107,9 @@ func cmdMainRun(cmd *cobra.Command, args []string) {
 	if err != nil {
 		Exitf("Failed to create service: %#v\n", err)
 	}
+
+	// Run middleware server
+	middleware.RunServer(flags.Host, strconv.Itoa(flags.Port))
 
 	if err := s.Run(); err != nil {
 		Exitf("%s failed: %#v\n", projectName, err)

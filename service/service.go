@@ -25,7 +25,48 @@ import (
 
 	"github.com/coreos/etcd/client"
 	"github.com/op/go-logging"
+	"github.com/prometheus/client_golang/prometheus"
 )
+
+const (
+	namespace = "ha_redis"
+)
+
+var (
+	currentMode = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Name:      "current_mode",
+		Help:      "Current operating mode (1=master, 0=slave).",
+	})
+	masterAttempts = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "act_as_master_attempts",
+		Help:      "Number of times actAsMaster is called.",
+	})
+	slaveAttempts = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "act_as_slave_attempts",
+		Help:      "Number of times actAsSave is called.",
+	})
+	updateMasterErrors = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "update_master_errors",
+		Help:      "Number of updateMaster errors.",
+	})
+	watchForMasterChangesErrors = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "watch_for_master_changes_errors",
+		Help:      "Number of watchForMasterChanges errors.",
+	})
+)
+
+func init() {
+	prometheus.MustRegister(currentMode)
+	prometheus.MustRegister(masterAttempts)
+	prometheus.MustRegister(slaveAttempts)
+	prometheus.MustRegister(updateMasterErrors)
+	prometheus.MustRegister(watchForMasterChangesErrors)
+}
 
 type ServiceConfig struct {
 	EtcdURL   string
@@ -149,17 +190,21 @@ func (s *Service) Run() error {
 }
 
 func (s *Service) actAsMaster() error {
+	masterAttempts.Inc()
+
 	// Configure redis as master
 	if err := s.configureSlaveOfNoOne(); err != nil {
 		s.Logger.Errorf("Error in configureSlaveOfNoOne: %#v", err)
 		return maskAny(err)
 	}
 	s.Logger.Infof("Acting as master on '%s'", s.ourRedisUrl)
+	currentMode.Set(1) // Master
 
 	// Update our master key in ETCD
 	for {
 		if err := s.updateMaster(); err != nil {
 			s.Logger.Errorf("Error in updateMaster: %#v", err)
+			updateMasterErrors.Inc()
 			return maskAny(err)
 		}
 		time.Sleep(s.MasterTTL / 2)
@@ -167,6 +212,8 @@ func (s *Service) actAsMaster() error {
 }
 
 func (s *Service) actAsSlave(masterURL string) error {
+	slaveAttempts.Inc()
+
 	// Configure redis as slave
 	masterIP, masterPort, err := net.SplitHostPort(masterURL)
 	if err != nil {
@@ -177,6 +224,7 @@ func (s *Service) actAsSlave(masterURL string) error {
 		return maskAny(err)
 	}
 	s.Logger.Infof("Acting as slave of '%s'", masterURL)
+	currentMode.Set(0) // Slave
 
 	for {
 		// Wait for changes in ETCD
@@ -184,6 +232,7 @@ func (s *Service) actAsSlave(masterURL string) error {
 			// Different master
 			return nil
 		} else {
+			watchForMasterChangesErrors.Inc()
 			s.Logger.Infof("watchForMasterChanges failed: %#v", err)
 		}
 

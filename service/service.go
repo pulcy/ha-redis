@@ -36,8 +36,9 @@ type ServiceConfig struct {
 	DockerURL     string
 	ContainerName string
 
-	RedisConf       string
-	RedisAppendOnly bool
+	RedisConf           string
+	RedisAppendOnly     bool
+	RedisAppendOnlyPath string
 }
 
 type ServiceDependencies struct {
@@ -84,6 +85,11 @@ func NewService(config ServiceConfig, deps ServiceDependencies) (*Service, error
 
 // Run performs the actual service.
 func (s *Service) Run() error {
+	// Check appendonly file
+	if err := s.checkRedisAppendOnlyFile(); err != nil {
+		return maskAny(err)
+	}
+
 	// Fetch announce info
 	if err := s.fetchAnnounceInfoFromContainer(); err != nil {
 		return maskAny(err)

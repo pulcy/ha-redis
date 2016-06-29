@@ -33,10 +33,11 @@ const (
 )
 
 var (
-	projectVersion   = "dev"
-	projectBuild     = "dev"
-	defaultMasterTTL = time.Minute
-	defaultLogLevel  = "info"
+	projectVersion             = "dev"
+	projectBuild               = "dev"
+	defaultMasterTTL           = time.Minute
+	defaultLogLevel            = "info"
+	defaultRedisAppendOnlyPath = "/data/appendonly.aof"
 )
 
 var (
@@ -58,6 +59,7 @@ func init() {
 	cmdMain.Flags().IntVar(&flags.AnnouncePort, "announce-port", 6379, "Port of master to announce when becoming a master")
 	cmdMain.Flags().StringVar(&flags.RedisConf, "redis-conf", "", "Path of redis configuration file")
 	cmdMain.Flags().BoolVar(&flags.RedisAppendOnly, "redis-appendonly", false, "If set, will turn on appendonly mode in redis")
+	cmdMain.Flags().StringVar(&flags.RedisAppendOnlyPath, "redis-appendonly-path", defaultRedisAppendOnlyPath, "Path of the append-only file which will be checked at startup")
 	cmdMain.Flags().StringVar(&flags.EtcdURL, "etcd-url", defaultEtcdURL, "URL of ETCD (path=master key)")
 	cmdMain.Flags().DurationVar(&flags.MasterTTL, "master-ttl", defaultMasterTTL, "TTL of master key in ETCD")
 	cmdMain.Flags().StringVar(&flags.DockerURL, "docker-url", "", "URL of docker daemon")

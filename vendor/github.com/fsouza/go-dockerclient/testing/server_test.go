@@ -38,12 +38,17 @@ func TestNewServer(t *testing.T) {
 }
 
 func TestServerStop(t *testing.T) {
+	const retries = 3
 	server, err := NewServer("127.0.0.1:0", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	server.Stop()
 	_, err = net.Dial("tcp", server.listener.Addr().String())
+	for i := 0; i < retries && err == nil; i++ {
+		time.Sleep(100 * time.Millisecond)
+		_, err = net.Dial("tcp", server.listener.Addr().String())
+	}
 	if err == nil {
 		t.Error("Unexpected <nil> error when dialing to stopped server")
 	}
@@ -2128,5 +2133,16 @@ func TestInfoDocker(t *testing.T) {
 	}
 	if infoData["DockerRootDir"].(string) != "/var/lib/docker" {
 		t.Fatalf("InfoDocker: wrong docker root. Want /var/lib/docker. Got %s.", infoData["DockerRootDir"])
+	}
+}
+
+func TestVersionDocker(t *testing.T) {
+	server, _ := NewServer("127.0.0.1:0", nil, nil)
+	server.buildMuxer()
+	recorder := httptest.NewRecorder()
+	request, _ := http.NewRequest("GET", "/version", nil)
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("VersionDocker: wrong status. Want %d. Got %d.", http.StatusOK, recorder.Code)
 	}
 }

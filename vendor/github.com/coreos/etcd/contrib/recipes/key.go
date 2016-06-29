@@ -1,4 +1,4 @@
-// Copyright 2016 CoreOS, Inc.
+// Copyright 2016 The etcd Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ import (
 	"golang.org/x/net/context"
 )
 
-// Key is a key/revision pair created by the client and stored on etcd
+// RemoteKV is a key/revision pair created by the client and stored on etcd
 type RemoteKV struct {
 	kv  v3.KV
 	key string
@@ -84,7 +84,7 @@ func putNewKV(kv v3.KV, key, val string, leaseID v3.LeaseID) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if txnresp.Succeeded == false {
+	if !txnresp.Succeeded {
 		return 0, ErrKeyExists
 	}
 	return txnresp.Header.Revision, nil
@@ -132,7 +132,7 @@ func newSequentialKV(kv v3.KV, prefix, val string, leaseID v3.LeaseID) (*RemoteK
 	if err != nil {
 		return nil, err
 	}
-	if txnresp.Succeeded == false {
+	if !txnresp.Succeeded {
 		return newSequentialKV(kv, prefix, val, leaseID)
 	}
 	return &RemoteKV{kv, newKey, txnresp.Header.Revision, val}, nil

@@ -4,8 +4,8 @@
 # Use of this source code is governed by a BSD-style
 # license that can be found in the LICENSE file.
 
-if ! [[ $TRAVIS_GO_VERSION =~ ^1\.[34] ]]; then
-	make lint
-fi
+make test
 
-make vet fmtcheck gotest
+if [[ $TRAVIS_OS_NAME == "linux" ]]; then
+	make integration
+fi

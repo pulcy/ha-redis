@@ -1,4 +1,4 @@
-// Copyright 2016 CoreOS, Inc.
+// Copyright 2016 The etcd Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,7 +16,6 @@ package command
 
 import (
 	"fmt"
-	"os"
 	"strconv"
 
 	v3 "github.com/coreos/etcd/clientv3"
@@ -31,29 +30,29 @@ func NewLeaseCommand() *cobra.Command {
 		Short: "lease is used to manage leases.",
 	}
 
-	lc.AddCommand(NewLeaseCreateCommand())
+	lc.AddCommand(NewLeaseGrantCommand())
 	lc.AddCommand(NewLeaseRevokeCommand())
 	lc.AddCommand(NewLeaseKeepAliveCommand())
 
 	return lc
 }
 
-// NewLeaseCreateCommand returns the cobra command for "lease create".
-func NewLeaseCreateCommand() *cobra.Command {
+// NewLeaseGrantCommand returns the cobra command for "lease grant".
+func NewLeaseGrantCommand() *cobra.Command {
 	lc := &cobra.Command{
-		Use:   "create",
-		Short: "create is used to create leases.",
+		Use:   "grant <ttl>",
+		Short: "grant is used to create leases.",
 
-		Run: leaseCreateCommandFunc,
+		Run: leaseGrantCommandFunc,
 	}
 
 	return lc
 }
 
-// leaseCreateCommandFunc executes the "lease create" command.
-func leaseCreateCommandFunc(cmd *cobra.Command, args []string) {
+// leaseGrantCommandFunc executes the "lease grant" command.
+func leaseGrantCommandFunc(cmd *cobra.Command, args []string) {
 	if len(args) != 1 {
-		ExitWithError(ExitBadArgs, fmt.Errorf("lease create command needs TTL argument."))
+		ExitWithError(ExitBadArgs, fmt.Errorf("lease grant command needs TTL argument."))
 	}
 
 	ttl, err := strconv.ParseInt(args[0], 10, 64)
@@ -62,19 +61,18 @@ func leaseCreateCommandFunc(cmd *cobra.Command, args []string) {
 	}
 
 	ctx, cancel := commandCtx(cmd)
-	resp, err := mustClientFromCmd(cmd).Create(ctx, ttl)
+	resp, err := mustClientFromCmd(cmd).Grant(ctx, ttl)
 	cancel()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create lease (%v)\n", err)
-		return
+		ExitWithError(ExitError, fmt.Errorf("failed to grant lease (%v)\n", err))
 	}
-	fmt.Printf("lease %016x created with TTL(%ds)\n", resp.ID, resp.TTL)
+	fmt.Printf("lease %016x granted with TTL(%ds)\n", resp.ID, resp.TTL)
 }
 
 // NewLeaseRevokeCommand returns the cobra command for "lease revoke".
 func NewLeaseRevokeCommand() *cobra.Command {
 	lc := &cobra.Command{
-		Use:   "revoke",
+		Use:   "revoke <leaseID>",
 		Short: "revoke is used to revoke leases.",
 
 		Run: leaseRevokeCommandFunc,
@@ -83,7 +81,7 @@ func NewLeaseRevokeCommand() *cobra.Command {
 	return lc
 }
 
-// leaseRevokeCommandFunc executes the "lease create" command.
+// leaseRevokeCommandFunc executes the "lease grant" command.
 func leaseRevokeCommandFunc(cmd *cobra.Command, args []string) {
 	if len(args) != 1 {
 		ExitWithError(ExitBadArgs, fmt.Errorf("lease revoke command needs 1 argument"))
@@ -98,8 +96,7 @@ func leaseRevokeCommandFunc(cmd *cobra.Command, args []string) {
 	_, err = mustClientFromCmd(cmd).Revoke(ctx, v3.LeaseID(id))
 	cancel()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to revoke lease (%v)\n", err)
-		return
+		ExitWithError(ExitError, fmt.Errorf("failed to revoke lease (%v)\n", err))
 	}
 	fmt.Printf("lease %016x revoked\n", id)
 }
@@ -107,7 +104,7 @@ func leaseRevokeCommandFunc(cmd *cobra.Command, args []string) {
 // NewLeaseKeepAliveCommand returns the cobra command for "lease keep-alive".
 func NewLeaseKeepAliveCommand() *cobra.Command {
 	lc := &cobra.Command{
-		Use:   "keep-alive",
+		Use:   "keep-alive <leaseID>",
 		Short: "keep-alive is used to keep leases alive.",
 
 		Run: leaseKeepAliveCommandFunc,

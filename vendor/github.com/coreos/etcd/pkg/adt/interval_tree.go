@@ -1,4 +1,4 @@
-// Copyright 2016 CoreOS, Inc.
+// Copyright 2016 The etcd Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,10 +27,12 @@ type Comparable interface {
 	Compare(c Comparable) int
 }
 
-type rbcolor bool
+type rbcolor int
 
-const black = true
-const red = false
+const (
+	black rbcolor = iota
+	red
+)
 
 // Interval implements a Comparable interval [begin, end)
 // TODO: support different sorts of intervals: (a,b), [a,b], (a, b]

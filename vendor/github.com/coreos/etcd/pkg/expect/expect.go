@@ -1,4 +1,4 @@
-// Copyright 2016 CoreOS, Inc.
+// Copyright 2016 The etcd Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -32,9 +32,10 @@ type ExpectProcess struct {
 	wg   sync.WaitGroup
 
 	ptyMu sync.Mutex // protects accessing fpty
-	cond  *sync.Cond // for broadcasting updates are avaiable
+	cond  *sync.Cond // for broadcasting updates are available
 	mu    sync.Mutex // protects lines and err
 	lines []string
+	count int // increment whenever new line gets added
 	err   error
 }
 
@@ -65,6 +66,7 @@ func (ep *ExpectProcess) read() {
 		ep.err = rerr
 		if l != "" {
 			ep.lines = append(ep.lines, l)
+			ep.count++
 			if len(ep.lines) == 1 {
 				ep.cond.Signal()
 			}
@@ -74,8 +76,8 @@ func (ep *ExpectProcess) read() {
 	ep.cond.Signal()
 }
 
-// Expect returns the first line containing the given string.
-func (ep *ExpectProcess) Expect(s string) (string, error) {
+// ExpectFunc returns the first line satisfying the function f.
+func (ep *ExpectProcess) ExpectFunc(f func(string) bool) (string, error) {
 	ep.mu.Lock()
 	for {
 		for len(ep.lines) == 0 && ep.err == nil {
@@ -86,7 +88,7 @@ func (ep *ExpectProcess) Expect(s string) (string, error) {
 		}
 		l := ep.lines[0]
 		ep.lines = ep.lines[1:]
-		if strings.Contains(l, s) {
+		if f(l) {
 			ep.mu.Unlock()
 			return l, nil
 		}
@@ -95,26 +97,58 @@ func (ep *ExpectProcess) Expect(s string) (string, error) {
 	return "", ep.err
 }
 
-// Close waits for the expect process to close
-func (ep *ExpectProcess) Close() error {
+// Expect returns the first line containing the given string.
+func (ep *ExpectProcess) Expect(s string) (string, error) {
+	return ep.ExpectFunc(func(txt string) bool { return strings.Contains(txt, s) })
+}
+
+// LineCount returns the number of recorded lines since
+// the beginning of the process.
+func (ep *ExpectProcess) LineCount() int {
+	ep.mu.Lock()
+	defer ep.mu.Unlock()
+	return ep.count
+}
+
+// Stop kills the expect process and waits for it to exit.
+func (ep *ExpectProcess) Stop() error { return ep.close(true) }
+
+// Signal sends a signal to the expect process
+func (ep *ExpectProcess) Signal(sig os.Signal) error {
+	return ep.cmd.Process.Signal(sig)
+}
+
+// Close waits for the expect process to exit.
+func (ep *ExpectProcess) Close() error { return ep.close(false) }
+
+func (ep *ExpectProcess) close(kill bool) error {
 	if ep.cmd == nil {
-		return nil
+		return ep.err
 	}
-	ep.cmd.Process.Kill()
+	if kill {
+		ep.cmd.Process.Kill()
+	}
+
+	err := ep.cmd.Wait()
 	ep.ptyMu.Lock()
 	ep.fpty.Close()
 	ep.ptyMu.Unlock()
-	err := ep.cmd.Wait()
 	ep.wg.Wait()
-	if err != nil && strings.Contains(err.Error(), "signal:") {
-		// ignore signal errors; expected from pty
-		err = nil
+
+	if err != nil {
+		ep.err = err
+		if !kill && strings.Contains(err.Error(), "exit status") {
+			// non-zero exit code
+			err = nil
+		} else if kill && strings.Contains(err.Error(), "signal:") {
+			err = nil
+		}
 	}
 	ep.cmd = nil
 	return err
 }
 
-func (ep *ExpectProcess) SendLine(command string) error {
-	_, err := io.WriteString(ep.fpty, command+"\r\n")
+func (ep *ExpectProcess) Send(command string) error {
+	_, err := io.WriteString(ep.fpty, command)
 	return err
 }

@@ -1,4 +1,4 @@
-// Copyright 2016 CoreOS, Inc.
+// Copyright 2016 The etcd Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,8 +21,8 @@ import (
 
 	"github.com/coreos/etcd/etcdserver/api/v3rpc/rpctypes"
 	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
+	"github.com/coreos/etcd/mvcc/mvccpb"
 	"github.com/coreos/etcd/pkg/testutil"
-	"github.com/coreos/etcd/storage/storagepb"
 	"golang.org/x/net/context"
 )
 
@@ -34,7 +34,7 @@ func TestV3LeasePrmote(t *testing.T) {
 	defer clus.Terminate(t)
 
 	// create lease
-	lresp, err := toGRPC(clus.RandClient()).Lease.LeaseCreate(context.TODO(), &pb.LeaseCreateRequest{TTL: 5})
+	lresp, err := toGRPC(clus.RandClient()).Lease.LeaseGrant(context.TODO(), &pb.LeaseGrantRequest{TTL: 5})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,16 +85,16 @@ func TestV3LeaseRevoke(t *testing.T) {
 	})
 }
 
-// TestV3LeaseCreateById ensures leases may be created by a given id.
-func TestV3LeaseCreateByID(t *testing.T) {
+// TestV3LeaseGrantById ensures leases may be created by a given id.
+func TestV3LeaseGrantByID(t *testing.T) {
 	defer testutil.AfterTest(t)
 	clus := NewClusterV3(t, &ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
 
 	// create fixed lease
-	lresp, err := toGRPC(clus.RandClient()).Lease.LeaseCreate(
+	lresp, err := toGRPC(clus.RandClient()).Lease.LeaseGrant(
 		context.TODO(),
-		&pb.LeaseCreateRequest{ID: 1, TTL: 1})
+		&pb.LeaseGrantRequest{ID: 1, TTL: 1})
 	if err != nil {
 		t.Errorf("could not create lease 1 (%v)", err)
 	}
@@ -103,17 +103,17 @@ func TestV3LeaseCreateByID(t *testing.T) {
 	}
 
 	// create duplicate fixed lease
-	lresp, err = toGRPC(clus.RandClient()).Lease.LeaseCreate(
+	lresp, err = toGRPC(clus.RandClient()).Lease.LeaseGrant(
 		context.TODO(),
-		&pb.LeaseCreateRequest{ID: 1, TTL: 1})
-	if err != rpctypes.ErrLeaseExist {
+		&pb.LeaseGrantRequest{ID: 1, TTL: 1})
+	if err != rpctypes.ErrGRPCLeaseExist {
 		t.Error(err)
 	}
 
 	// create fresh fixed lease
-	lresp, err = toGRPC(clus.RandClient()).Lease.LeaseCreate(
+	lresp, err = toGRPC(clus.RandClient()).Lease.LeaseGrant(
 		context.TODO(),
-		&pb.LeaseCreateRequest{ID: 2, TTL: 1})
+		&pb.LeaseGrantRequest{ID: 2, TTL: 1})
 	if err != nil {
 		t.Errorf("could not create lease 2 (%v)", err)
 	}
@@ -158,7 +158,7 @@ func TestV3LeaseExpire(t *testing.T) {
 				errc <- err
 			case len(resp.Events) != 1:
 				fallthrough
-			case resp.Events[0].Type != storagepb.DELETE:
+			case resp.Events[0].Type != mvccpb.DELETE:
 				errc <- fmt.Errorf("expected key delete, got %v", resp)
 			default:
 				errc <- nil
@@ -216,9 +216,9 @@ func TestV3LeaseExists(t *testing.T) {
 	// create lease
 	ctx0, cancel0 := context.WithCancel(context.Background())
 	defer cancel0()
-	lresp, err := toGRPC(clus.RandClient()).Lease.LeaseCreate(
+	lresp, err := toGRPC(clus.RandClient()).Lease.LeaseGrant(
 		ctx0,
-		&pb.LeaseCreateRequest{TTL: 30})
+		&pb.LeaseGrantRequest{TTL: 30})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,8 +242,8 @@ func TestV3PutOnNonExistLease(t *testing.T) {
 	badLeaseID := int64(0x12345678)
 	putr := &pb.PutRequest{Key: []byte("foo"), Value: []byte("bar"), Lease: badLeaseID}
 	_, err := toGRPC(clus.RandClient()).KV.Put(ctx, putr)
-	if err != rpctypes.ErrLeaseNotFound {
-		t.Errorf("err = %v, want %v", err, rpctypes.ErrCompacted)
+	if err != rpctypes.ErrGRPCLeaseNotFound {
+		t.Errorf("err = %v, want %v", err, rpctypes.ErrGRPCCompacted)
 	}
 }
 
@@ -258,11 +258,11 @@ func TestV3LeaseSwitch(t *testing.T) {
 	// create lease
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	lresp1, err1 := toGRPC(clus.RandClient()).Lease.LeaseCreate(ctx, &pb.LeaseCreateRequest{TTL: 30})
+	lresp1, err1 := toGRPC(clus.RandClient()).Lease.LeaseGrant(ctx, &pb.LeaseGrantRequest{TTL: 30})
 	if err1 != nil {
 		t.Fatal(err1)
 	}
-	lresp2, err2 := toGRPC(clus.RandClient()).Lease.LeaseCreate(ctx, &pb.LeaseCreateRequest{TTL: 30})
+	lresp2, err2 := toGRPC(clus.RandClient()).Lease.LeaseGrant(ctx, &pb.LeaseGrantRequest{TTL: 30})
 	if err2 != nil {
 		t.Fatal(err2)
 	}
@@ -319,7 +319,7 @@ func TestV3LeaseFailover(t *testing.T) {
 	lc := toGRPC(clus.Client(toIsolate)).Lease
 
 	// create lease
-	lresp, err := lc.LeaseCreate(context.TODO(), &pb.LeaseCreateRequest{TTL: 5})
+	lresp, err := lc.LeaseGrant(context.TODO(), &pb.LeaseGrantRequest{TTL: 5})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,9 +369,9 @@ func TestV3LeaseFailover(t *testing.T) {
 // acquireLeaseAndKey creates a new lease and creates an attached key.
 func acquireLeaseAndKey(clus *ClusterV3, key string) (int64, error) {
 	// create lease
-	lresp, err := toGRPC(clus.RandClient()).Lease.LeaseCreate(
+	lresp, err := toGRPC(clus.RandClient()).Lease.LeaseGrant(
 		context.TODO(),
-		&pb.LeaseCreateRequest{TTL: 1})
+		&pb.LeaseGrantRequest{TTL: 1})
 	if err != nil {
 		return 0, err
 	}
@@ -415,7 +415,7 @@ func testLeaseRemoveLeasedKey(t *testing.T, act func(*ClusterV3, int64) error) {
 func leaseExist(t *testing.T, clus *ClusterV3, leaseID int64) bool {
 	l := toGRPC(clus.RandClient()).Lease
 
-	_, err := l.LeaseCreate(context.Background(), &pb.LeaseCreateRequest{ID: leaseID, TTL: 5})
+	_, err := l.LeaseGrant(context.Background(), &pb.LeaseGrantRequest{ID: leaseID, TTL: 5})
 	if err == nil {
 		_, err = l.LeaseRevoke(context.Background(), &pb.LeaseRevokeRequest{ID: leaseID})
 		if err != nil {
@@ -424,7 +424,7 @@ func leaseExist(t *testing.T, clus *ClusterV3, leaseID int64) bool {
 		return false
 	}
 
-	if err == rpctypes.ErrLeaseExist {
+	if err == rpctypes.ErrGRPCLeaseExist {
 		return true
 	}
 	t.Fatalf("unexpecter error %v", err)

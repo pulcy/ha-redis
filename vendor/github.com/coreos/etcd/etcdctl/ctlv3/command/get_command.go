@@ -1,4 +1,4 @@
-// Copyright 2015 CoreOS, Inc.
+// Copyright 2015 The etcd Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,6 +29,8 @@ var (
 	getSortTarget  string
 	getPrefix      bool
 	getFromKey     bool
+	getRev         int64
+	getKeysOnly    bool
 )
 
 // NewGetCommand returns the cobra command for "get".
@@ -45,6 +47,8 @@ func NewGetCommand() *cobra.Command {
 	cmd.Flags().Int64Var(&getLimit, "limit", 0, "maximum number of results")
 	cmd.Flags().BoolVar(&getPrefix, "prefix", false, "get keys with matching prefix")
 	cmd.Flags().BoolVar(&getFromKey, "from-key", false, "get keys that are greater than or equal to the given key")
+	cmd.Flags().Int64Var(&getRev, "rev", 0, "specify the kv revision")
+	cmd.Flags().BoolVar(&getKeysOnly, "keys-only", false, "get only the keys")
 	return cmd
 }
 
@@ -88,6 +92,9 @@ func getGetOp(cmd *cobra.Command, args []string) (string, []clientv3.OpOption) {
 	}
 
 	opts = append(opts, clientv3.WithLimit(getLimit))
+	if getRev > 0 {
+		opts = append(opts, clientv3.WithRev(getRev))
+	}
 
 	sortByOrder := clientv3.SortNone
 	sortOrder := strings.ToUpper(getSortOrder)
@@ -124,11 +131,23 @@ func getGetOp(cmd *cobra.Command, args []string) (string, []clientv3.OpOption) {
 	opts = append(opts, clientv3.WithSort(sortByTarget, sortByOrder))
 
 	if getPrefix {
-		opts = append(opts, clientv3.WithPrefix())
+		if len(key) == 0 {
+			key = "\x00"
+			opts = append(opts, clientv3.WithFromKey())
+		} else {
+			opts = append(opts, clientv3.WithPrefix())
+		}
 	}
 
 	if getFromKey {
+		if len(key) == 0 {
+			key = "\x00"
+		}
 		opts = append(opts, clientv3.WithFromKey())
+	}
+
+	if getKeysOnly {
+		opts = append(opts, clientv3.WithKeysOnly())
 	}
 
 	return key, opts

@@ -1,4 +1,4 @@
-// Copyright 2016 CoreOS, Inc.
+// Copyright 2016 The etcd Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -49,7 +49,7 @@ func NewSession(client *v3.Client) (*Session, error) {
 		return s, nil
 	}
 
-	resp, err := client.Create(client.Ctx(), sessionTTL)
+	resp, err := client.Grant(client.Ctx(), sessionTTL)
 	if err != nil {
 		return nil, err
 	}

@@ -1,4 +1,4 @@
-// Copyright 2016 CoreOS, Inc.
+// Copyright 2016 The etcd Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -45,7 +45,7 @@ func (qa *quotaAlarmer) check(ctx context.Context, r interface{}) error {
 		Alarm:    pb.AlarmType_NOSPACE,
 	}
 	qa.a.Alarm(ctx, req)
-	return rpctypes.ErrNoSpace
+	return rpctypes.ErrGRPCNoSpace
 }
 
 func NewQuotaKVServer(s *etcdserver.EtcdServer) pb.KVServer {
@@ -74,11 +74,11 @@ type quotaLeaseServer struct {
 	qa quotaAlarmer
 }
 
-func (s *quotaLeaseServer) LeaseCreate(ctx context.Context, cr *pb.LeaseCreateRequest) (*pb.LeaseCreateResponse, error) {
+func (s *quotaLeaseServer) LeaseGrant(ctx context.Context, cr *pb.LeaseGrantRequest) (*pb.LeaseGrantResponse, error) {
 	if err := s.qa.check(ctx, cr); err != nil {
 		return nil, err
 	}
-	return s.LeaseServer.LeaseCreate(ctx, cr)
+	return s.LeaseServer.LeaseGrant(ctx, cr)
 }
 
 func NewQuotaLeaseServer(s *etcdserver.EtcdServer) pb.LeaseServer {

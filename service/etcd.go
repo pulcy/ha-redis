@@ -69,6 +69,8 @@ func (s *Service) updateMaster() error {
 	}
 
 	if err := retry.Do(update,
+		// Make sure we fail asap on key-not-found errors
+		retry.RetryChecker(func(err error) bool { return !isEtcdError(err, client.ErrorCodeKeyNotFound) }),
 		retry.Timeout(s.MasterTTL/3),
 		retry.MaxTries(25),
 		retry.Sleep(time.Millisecond*250)); err != nil {

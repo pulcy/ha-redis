@@ -15,9 +15,9 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"net"
-	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -69,8 +69,9 @@ func init() {
 }
 
 type ServiceConfig struct {
-	EtcdURL   string
-	MasterTTL time.Duration
+	EtcdEndpoints []string
+	EtcdPath      string
+	MasterTTL     time.Duration
 
 	AnnounceIP    string
 	AnnouncePort  int
@@ -101,19 +102,15 @@ type Service struct {
 func NewService(config ServiceConfig, deps ServiceDependencies) (*Service, error) {
 	cfg := client.Config{
 		Transport: client.DefaultTransport,
+		Endpoints: config.EtcdEndpoints,
 	}
-	uri, err := url.Parse(config.EtcdURL)
-	if err != nil {
-		return nil, maskAny(err)
-	}
-	masterKey := uri.Path
-	if uri.Host != "" {
-		cfg.Endpoints = append(cfg.Endpoints, "http://"+uri.Host)
-	}
+	masterKey := config.EtcdPath
 	c, err := client.New(cfg)
 	if err != nil {
 		return nil, maskAny(err)
 	}
+
+	go c.AutoSync(context.Background(), time.Second*30)
 
 	return &Service{
 		ServiceConfig:       config,

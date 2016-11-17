@@ -16,6 +16,7 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -52,8 +53,9 @@ var (
 	}
 	log   = logging.MustGetLogger(projectName)
 	flags struct {
-		Host string
-		Port int
+		etcdURL string
+		Host    string
+		Port    int
 		service.ServiceConfig
 		logLevel string
 	}
@@ -68,7 +70,9 @@ func init() {
 	cmdMain.Flags().StringVar(&flags.RedisConf, "redis-conf", "", "Path of redis configuration file")
 	cmdMain.Flags().BoolVar(&flags.RedisAppendOnly, "redis-appendonly", false, "If set, will turn on appendonly mode in redis")
 	cmdMain.Flags().StringVar(&flags.RedisAppendOnlyPath, "redis-appendonly-path", defaultRedisAppendOnlyPath, "Path of the append-only file which will be checked at startup")
-	cmdMain.Flags().StringVar(&flags.EtcdURL, "etcd-url", defaultEtcdURL, "URL of ETCD (path=master key)")
+	cmdMain.Flags().StringVar(&flags.etcdURL, "etcd-url", defaultEtcdURL, "URL of ETCD (path=master key)")
+	cmdMain.Flags().StringSliceVar(&flags.EtcdEndpoints, "etcd-endpoint", nil, "Etcd client endpoints")
+	cmdMain.Flags().StringVar(&flags.EtcdPath, "etcd-path", "", "Path into etcd namespace")
 	cmdMain.Flags().DurationVar(&flags.MasterTTL, "master-ttl", defaultMasterTTL, "TTL of master key in ETCD")
 	cmdMain.Flags().StringVar(&flags.DockerURL, "docker-url", "", "URL of docker daemon")
 	cmdMain.Flags().StringVar(&flags.ContainerName, "container-name", "", "Name of the docker container running this process")
@@ -82,6 +86,15 @@ func main() {
 
 func cmdMainRun(cmd *cobra.Command, args []string) {
 	// Check flags
+	if flags.etcdURL != "" {
+		etcdUrl, err := url.Parse(flags.etcdURL)
+		if err != nil {
+			Exitf("--etcd-url '%s' is not valid: %#v", flags.etcdURL, err)
+		}
+		flags.EtcdEndpoints = []string{fmt.Sprintf("%s://%s", etcdUrl.Scheme, etcdUrl.Host)}
+		flags.EtcdPath = etcdUrl.Path
+	}
+
 	if flags.DockerURL != "" || flags.ContainerName != "" {
 		if flags.DockerURL == "" {
 			Exitf("--docker-url is missing")

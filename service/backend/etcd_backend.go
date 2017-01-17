@@ -1,40 +1,59 @@
-// Copyright (c) 2016 Pulcy.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//   http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
-package service
+package backend
 
 import (
 	"time"
 
 	"github.com/coreos/etcd/client"
-	"github.com/giantswarm/retry-go"
+	retry "github.com/giantswarm/retry-go"
+	logging "github.com/op/go-logging"
 	"golang.org/x/net/context"
 )
+
+// NewEtcdBackend creates a new Backend that uses ETCD.
+func NewEtcdBackend(log *logging.Logger, endpoints []string, etcdPath string, masterTTL time.Duration) (Backend, error) {
+	cfg := client.Config{
+		Transport: client.DefaultTransport,
+		Endpoints: endpoints,
+	}
+	masterKey := etcdPath
+	c, err := client.New(cfg)
+	if err != nil {
+		return nil, maskAny(err)
+	}
+
+	go c.AutoSync(context.Background(), time.Second*30)
+
+	return &etcdBackend{
+		log:       log,
+		client:    c,
+		masterKey: masterKey,
+		masterTTL: masterTTL,
+	}, nil
+
+}
+
+type etcdBackend struct {
+	log                 *logging.Logger
+	client              client.Client
+	masterWatcher       client.Watcher
+	recentWatcherErrors int
+	masterKey           string
+	masterTTL           time.Duration
+}
 
 const (
 	maxRecentWatcherErrors = 5 // Number of recent errors before the watcher is discarded and rebuild
 )
 
-// tryBecomeMaster tries to create a value in ETCD under the master key.
+// TryBecomeMaster tries to create a value in ETCD under the master key.
 // On success, we're the master, otherwise we're the slave.
-func (s *Service) tryBecomeMaster() (bool, string, error) {
+func (s *etcdBackend) TryBecomeMaster(ourRedisUrl string) (bool, string, error) {
 	kAPI := client.NewKeysAPI(s.client)
 	options := &client.SetOptions{
 		PrevExist: client.PrevNoExist,
-		TTL:       s.MasterTTL,
+		TTL:       s.masterTTL,
 	}
-	if _, err := kAPI.Set(context.Background(), s.masterKey, s.ourRedisUrl, options); isEtcdError(err, client.ErrorCodeNodeExist) {
+	if _, err := kAPI.Set(context.Background(), s.masterKey, ourRedisUrl, options); isEtcdError(err, client.ErrorCodeNodeExist) {
 		// Node already exists, we're not the master
 		// Try to read the current master URL and return it
 		resp, err := kAPI.Get(context.Background(), s.masterKey, nil)
@@ -51,17 +70,17 @@ func (s *Service) tryBecomeMaster() (bool, string, error) {
 	return true, "", nil
 }
 
-// updateMaster tries to update the master key
-func (s *Service) updateMaster() error {
+// UpdateMaster tries to update the master key
+func (s *etcdBackend) UpdateMaster(ourRedisUrl string) error {
 	update := func() error {
 		kAPI := client.NewKeysAPI(s.client)
 		options := &client.SetOptions{
-			PrevValue: s.ourRedisUrl,
+			PrevValue: ourRedisUrl,
 			PrevExist: client.PrevExist,
-			TTL:       s.MasterTTL,
+			TTL:       s.masterTTL,
 			//Refresh:   true,
 		}
-		if _, err := kAPI.Set(context.Background(), s.masterKey, s.ourRedisUrl, options); err != nil {
+		if _, err := kAPI.Set(context.Background(), s.masterKey, ourRedisUrl, options); err != nil {
 			// An error occurred
 			return maskAny(err)
 		}
@@ -71,7 +90,7 @@ func (s *Service) updateMaster() error {
 	if err := retry.Do(update,
 		// Make sure we fail asap on key-not-found errors
 		retry.RetryChecker(func(err error) bool { return !isEtcdError(err, client.ErrorCodeKeyNotFound) }),
-		retry.Timeout(s.MasterTTL/3),
+		retry.Timeout(s.masterTTL/3),
 		retry.MaxTries(25),
 		retry.Sleep(time.Millisecond*250)); err != nil {
 		return maskAny(err)
@@ -81,11 +100,11 @@ func (s *Service) updateMaster() error {
 	return nil
 }
 
-// removeMaster tries to remove the master key so another instance can become master
-func (s *Service) removeMaster() error {
+// RemoveMaster tries to remove the master key so another instance can become master
+func (s *etcdBackend) RemoveMaster(ourRedisUrl string) error {
 	kAPI := client.NewKeysAPI(s.client)
 	options := &client.DeleteOptions{
-		PrevValue: s.ourRedisUrl,
+		PrevValue: ourRedisUrl,
 		Recursive: false,
 		Dir:       false,
 	}
@@ -103,9 +122,9 @@ func (s *Service) removeMaster() error {
 	return nil
 }
 
-// watchForMasterChanges watched ETCD for changes in the master key.
+// WatchForMasterChanges watched ETCD for changes in the master key.
 // It will return as soon as a master change was detected.
-func (s *Service) watchForMasterChanges(masterURL string) error {
+func (s *etcdBackend) WatchForMasterChanges(masterURL string) error {
 	for {
 		if s.masterWatcher == nil || s.recentWatcherErrors > maxRecentWatcherErrors {
 			kAPI := client.NewKeysAPI(s.client)
@@ -122,15 +141,15 @@ func (s *Service) watchForMasterChanges(masterURL string) error {
 		}
 		s.recentWatcherErrors = 0
 		if resp.Node == nil {
-			s.Logger.Infof("Change detected, node=nil: %#v", resp)
+			s.log.Infof("Change detected, node=nil: %#v", resp)
 			return nil
 		}
 		if resp.Node.Value != masterURL {
 			// Change detected
-			s.Logger.Infof("Change in master key detected: '%s' -> '%s'", masterURL, resp.Node.Value)
+			s.log.Infof("Change in master key detected: '%s' -> '%s'", masterURL, resp.Node.Value)
 			return nil
 		}
-		s.Logger.Debugf("Etcd watch triggered, no change detected")
+		s.log.Debugf("Etcd watch triggered, no change detected")
 	}
 }
 

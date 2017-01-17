@@ -1,4 +1,4 @@
-// Copyright (c) 2016 Pulcy.
+// Copyright (c) 2017 Pulcy.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +15,6 @@
 package service
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"os"
@@ -23,9 +22,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/coreos/etcd/client"
 	"github.com/op/go-logging"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/pulcy/ha-redis/service/backend"
+	"github.com/pulcy/ha-redis/service/environment"
 )
 
 const (
@@ -69,14 +69,7 @@ func init() {
 }
 
 type ServiceConfig struct {
-	EtcdEndpoints []string
-	EtcdPath      string
-	MasterTTL     time.Duration
-
-	AnnounceIP    string
-	AnnouncePort  int
-	DockerURL     string
-	ContainerName string
+	MasterTTL time.Duration
 
 	RedisConf           string
 	RedisAppendOnly     bool
@@ -84,40 +77,23 @@ type ServiceConfig struct {
 }
 
 type ServiceDependencies struct {
-	Logger *logging.Logger
+	Logger      *logging.Logger
+	Backend     backend.Backend
+	Environment environment.Environment
 }
 
 type Service struct {
 	ServiceConfig
 	ServiceDependencies
 
-	client              client.Client
-	masterWatcher       client.Watcher
-	recentWatcherErrors int
-	masterKey           string
-	ourRedisUrl         string
+	ourRedisUrl string
 }
 
 // NewService initializes a new Service.
 func NewService(config ServiceConfig, deps ServiceDependencies) (*Service, error) {
-	cfg := client.Config{
-		Transport: client.DefaultTransport,
-		Endpoints: config.EtcdEndpoints,
-	}
-	masterKey := config.EtcdPath
-	c, err := client.New(cfg)
-	if err != nil {
-		return nil, maskAny(err)
-	}
-
-	go c.AutoSync(context.Background(), time.Second*30)
-
 	return &Service{
 		ServiceConfig:       config,
 		ServiceDependencies: deps,
-
-		client:    c,
-		masterKey: masterKey,
 	}, nil
 }
 
@@ -129,11 +105,12 @@ func (s *Service) Run() error {
 	}
 
 	// Fetch announce info
-	if err := s.fetchAnnounceInfoFromContainer(); err != nil {
+	announceIP, announcePort, err := s.Environment.FetchAnnounceInfo()
+	if err != nil {
 		return maskAny(err)
 	}
 	// Format the redis URL to use if we're master
-	s.ourRedisUrl = fmt.Sprintf("%s:%d", s.AnnounceIP, s.AnnouncePort)
+	s.ourRedisUrl = fmt.Sprintf("%s:%d", announceIP, announcePort)
 
 	// Start our local redis
 	exitChan := make(chan int)
@@ -157,7 +134,7 @@ func (s *Service) Run() error {
 		<-c
 
 		// Attempt to remove ourself as master (if we're slave this will silently fail)
-		if err := s.removeMaster(); err != nil {
+		if err := s.Backend.RemoveMaster(s.ourRedisUrl); err != nil {
 			s.Logger.Errorf("Remove master cleanup failed: %#v", err)
 		}
 
@@ -167,7 +144,7 @@ func (s *Service) Run() error {
 	}()
 
 	for {
-		if success, masterURL, err := s.tryBecomeMaster(); err != nil {
+		if success, masterURL, err := s.Backend.TryBecomeMaster(s.ourRedisUrl); err != nil {
 			s.Logger.Errorf("Error in tryBecomeMaster, retry soon: %#v", err)
 			time.Sleep(time.Second * 5)
 		} else if success {
@@ -197,9 +174,9 @@ func (s *Service) actAsMaster() error {
 	s.Logger.Infof("Acting as master on '%s'", s.ourRedisUrl)
 	currentMode.Set(1) // Master
 
-	// Update our master key in ETCD
+	// Update our master key in backend
 	for {
-		if err := s.updateMaster(); err != nil {
+		if err := s.Backend.UpdateMaster(s.ourRedisUrl); err != nil {
 			s.Logger.Errorf("Error in updateMaster: %#v", err)
 			updateMasterErrors.Inc()
 			return maskAny(err)
@@ -224,8 +201,8 @@ func (s *Service) actAsSlave(masterURL string) error {
 	currentMode.Set(0) // Slave
 
 	for {
-		// Wait for changes in ETCD
-		if err := s.watchForMasterChanges(masterURL); err == nil {
+		// Wait for changes in backend
+		if err := s.Backend.WatchForMasterChanges(masterURL); err == nil {
 			// Different master
 			return nil
 		} else {

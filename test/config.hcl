@@ -2,7 +2,7 @@ job "haredis_test" {
     group "queue" {
         count = 2
         task "redis" {
-            image = "pulcy/ha-redis:20170117101150"
+            image = "pulcy/ha-redis:20170117115000"
             ports = ["${private_ipv4}::6379", 8080]
             args = [
                 "--host=0.0.0.0",

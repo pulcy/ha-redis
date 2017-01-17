@@ -26,6 +26,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/pulcy/ha-redis/service/backend"
 	"github.com/pulcy/ha-redis/service/environment"
+	"github.com/pulcy/ha-redis/service/proxy"
 )
 
 const (
@@ -71,6 +72,7 @@ func init() {
 type ServiceConfig struct {
 	MasterTTL time.Duration
 
+	RedisPort           int
 	RedisConf           string
 	RedisAppendOnly     bool
 	RedisAppendOnlyPath string
@@ -80,13 +82,15 @@ type ServiceDependencies struct {
 	Logger      *logging.Logger
 	Backend     backend.Backend
 	Environment environment.Environment
+	Proxy       proxy.Proxy
 }
 
 type Service struct {
 	ServiceConfig
 	ServiceDependencies
 
-	ourRedisUrl string
+	ourRedisUrl   string // Externally reachable url of our redis instance (ip:port)
+	localRedisUrl string // Local only url of our redis instance (127.0.0.1:port)
 }
 
 // NewService initializes a new Service.
@@ -111,6 +115,7 @@ func (s *Service) Run() error {
 	}
 	// Format the redis URL to use if we're master
 	s.ourRedisUrl = fmt.Sprintf("%s:%d", announceIP, announcePort)
+	s.localRedisUrl = fmt.Sprintf("127.0.0.1:%d", s.RedisPort)
 
 	// Start our local redis
 	exitChan := make(chan int)
@@ -174,6 +179,11 @@ func (s *Service) actAsMaster() error {
 	s.Logger.Infof("Acting as master on '%s'", s.ourRedisUrl)
 	currentMode.Set(1) // Master
 
+	// Update proxy
+	if err := s.updateProxy(s.localRedisUrl); err != nil {
+		s.Logger.Errorf("Failed to update proxy: %#v", err)
+	}
+
 	// Update our master key in backend
 	for {
 		if err := s.Backend.UpdateMaster(s.ourRedisUrl); err != nil {
@@ -187,6 +197,11 @@ func (s *Service) actAsMaster() error {
 
 func (s *Service) actAsSlave(masterURL string) error {
 	slaveAttempts.Inc()
+
+	// Update proxy
+	if err := s.updateProxy(masterURL); err != nil {
+		s.Logger.Errorf("Failed to update proxy: %#v", err)
+	}
 
 	// Configure redis as slave
 	masterIP, masterPort, err := net.SplitHostPort(masterURL)
@@ -220,4 +235,15 @@ func (s *Service) actAsSlave(masterURL string) error {
 		s.Logger.Info("ping to master still succeeds, remaining slave for now")
 		time.Sleep(time.Millisecond * 250)
 	}
+}
+
+// updateProxy updates the proxy (if it exists)
+func (s *Service) updateProxy(masterURL string) error {
+	if s.Proxy == nil {
+		return nil
+	}
+	if err := s.Proxy.Update(masterURL); err != nil {
+		return maskAny(err)
+	}
+	return nil
 }

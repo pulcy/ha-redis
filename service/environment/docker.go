@@ -11,7 +11,7 @@ import (
 )
 
 // NewDockerEnvironment creates a new Environment that fetches IP&address from docker.
-func NewDockerEnvironment(log *logging.Logger, defaultAnnounceIP string, defaultAnnouncePort int, dockerURL, containerName string) (Environment, error) {
+func NewDockerEnvironment(log *logging.Logger, redisPort int, defaultAnnounceIP string, defaultAnnouncePort int, dockerURL, containerName string) (Environment, error) {
 	return &dockerEnvironment{
 		defaultAnnounceIP:   defaultAnnounceIP,
 		defaultAnnouncePort: defaultAnnouncePort,
@@ -24,13 +24,14 @@ func NewDockerEnvironment(log *logging.Logger, defaultAnnounceIP string, default
 type dockerEnvironment struct {
 	defaultAnnounceIP   string
 	defaultAnnouncePort int
+	redisPort           int
 	log                 *logging.Logger
 	dockerURL           string
 	containerName       string
 }
 
 const (
-	redisPort = "6379/tcp"
+	redisPortTemplate = "%s/tcp"
 )
 
 // fetchAnnounceInfoFromContainer connects to docker to ask for the announce IP
@@ -52,8 +53,9 @@ func (s *dockerEnvironment) FetchAnnounceInfo() (announceIP string, announcePort
 		if err != nil {
 			return maskAny(err)
 		}
+		redisPort := fmt.Sprintf(redisPortTemplate, s.redisPort)
 		if c.NetworkSettings != nil {
-			if binding, ok := c.NetworkSettings.Ports[redisPort]; ok {
+			if binding, ok := c.NetworkSettings.Ports[docker.Port(redisPort)]; ok {
 				if len(binding) > 0 {
 					announceIP = binding[0].HostIP
 					if port, err := strconv.Atoi(binding[0].HostPort); err != nil {

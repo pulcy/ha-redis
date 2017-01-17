@@ -30,6 +30,7 @@ import (
 	"github.com/pulcy/ha-redis/service"
 	"github.com/pulcy/ha-redis/service/backend"
 	"github.com/pulcy/ha-redis/service/environment"
+	"github.com/pulcy/ha-redis/service/proxy"
 )
 
 const (
@@ -46,8 +47,11 @@ var (
 	defaultRedisAppendOnlyPath = "/data/appendonly.aof"
 	defaultHost                = "127.0.0.1"
 	defaultPort                = 8080
-	defaultAnnouncePort        = 6379
+	defaultRedisPort           = 6380
+	defaultClientPort          = 6379
 	defaultK8sAnnotationKey    = "pulcy.com/haredis.lock"
+	defaultHAProxyPath         = "haproxy"
+	defaultHAProxyConfPath     = "/data/config/haproxy.conf"
 )
 
 var (
@@ -76,6 +80,10 @@ var (
 		// Service
 		announceIP   string
 		announcePort int
+		clientPort   int
+		// Proxy
+		haproxyPath     string
+		haproxyConfPath string
 		service.ServiceConfig
 		logLevel string
 	}
@@ -86,7 +94,9 @@ func init() {
 	cmdMain.Flags().StringVar(&flags.Host, "host", defaultHost, "IP address to bind to")
 	cmdMain.Flags().IntVar(&flags.Port, "port", defaultPort, "Port to listen on")
 	cmdMain.Flags().StringVar(&flags.announceIP, "announce-ip", "", "IP address of master to announce when becoming a master")
-	cmdMain.Flags().IntVar(&flags.announcePort, "announce-port", defaultAnnouncePort, "Port of master to announce when becoming a master")
+	cmdMain.Flags().IntVar(&flags.announcePort, "announce-port", defaultRedisPort, "Port of master to announce when becoming a master")
+	cmdMain.Flags().IntVar(&flags.clientPort, "client-port", defaultClientPort, "Port that redis clients will listen on")
+	cmdMain.Flags().IntVar(&flags.RedisPort, "redis-port", defaultRedisPort, "Port redis will listen on")
 	cmdMain.Flags().StringVar(&flags.RedisConf, "redis-conf", "", "Path of redis configuration file")
 	cmdMain.Flags().BoolVar(&flags.RedisAppendOnly, "redis-appendonly", false, "If set, will turn on appendonly mode in redis")
 	cmdMain.Flags().StringVar(&flags.RedisAppendOnlyPath, "redis-appendonly-path", defaultRedisAppendOnlyPath, "Path of the append-only file which will be checked at startup")
@@ -103,6 +113,9 @@ func init() {
 	cmdMain.Flags().StringVar(&flags.k8sPodName, "kubernetes-pod", defaultK8sPod, "Name of pod containing this process")
 	cmdMain.Flags().StringVar(&flags.k8sReplicaSetName, "kubernetes-replicaset", "", "Name of replicaSet to use as lock resource (if not set, fetched via pod)")
 	cmdMain.Flags().StringVar(&flags.k8sAnnotationKey, "kubernetes-annotation-key", defaultK8sAnnotationKey, "Name of Kubernetes annotation used for locking")
+	// Proxy
+	cmdMain.Flags().StringVar(&flags.haproxyPath, "haproxy-path", defaultHAProxyPath, "Full path of haproxy binary")
+	cmdMain.Flags().StringVar(&flags.haproxyConfPath, "haproxy-conf-path", defaultHAProxyConfPath, "Full path of haproxy config file")
 }
 
 func main() {
@@ -163,7 +176,7 @@ func cmdMainRun(cmd *cobra.Command, args []string) {
 			Exitf("Failed to create Kubernetes environment: %#v\n", err)
 		}
 	} else {
-		env, err = environment.NewDockerEnvironment(log, flags.announceIP, flags.announcePort, flags.dockerURL, flags.containerName)
+		env, err = environment.NewDockerEnvironment(log, flags.RedisPort, flags.announceIP, flags.announcePort, flags.dockerURL, flags.containerName)
 		if err != nil {
 			Exitf("Failed to create Docker environment: %#v\n", err)
 		}
@@ -190,11 +203,18 @@ func cmdMainRun(cmd *cobra.Command, args []string) {
 		}
 	}
 
+	// Create proxy
+	p, err := proxy.NewHAProxy(log, flags.clientPort, flags.haproxyPath, flags.haproxyConfPath)
+	if err != nil {
+		Exitf("Failed to create HA proxy: %#v\n", err)
+	}
+
 	// Create service
 	s, err := service.NewService(flags.ServiceConfig, service.ServiceDependencies{
 		Logger:      log,
 		Backend:     b,
 		Environment: env,
+		Proxy:       p,
 	})
 	if err != nil {
 		Exitf("Failed to create service: %#v\n", err)

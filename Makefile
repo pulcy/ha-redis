@@ -58,6 +58,7 @@ update-vendor:
 		github.com/prometheus/client_golang/prometheus \
 		github.com/spf13/cobra \
 		github.com/spf13/pflag \
+		github.com/YakLabs/k8s-client \
 		golang.org/x/net/context
 
 $(BIN): $(GOBUILDDIR) $(SOURCES)

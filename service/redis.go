@@ -1,4 +1,4 @@
-// Copyright (c) 2016 Pulcy.
+// Copyright (c) 2017 Pulcy.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,16 +19,20 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"time"
 
 	"github.com/adjust/redis"
-	"github.com/giantswarm/retry-go"
+	retry "github.com/giantswarm/retry-go"
 )
 
 // Start the redis process
 func (s *Service) startRedis(exitChan chan int) (*exec.Cmd, error) {
 	args := []string{}
-	args = append(args, "--protected-mode", "no")
+	args = append(args,
+		"--protected-mode", "no",
+		"--port", strconv.Itoa(s.RedisPort),
+	)
 	if s.RedisAppendOnly {
 		args = append(args, "--appendonly", "yes")
 	}
@@ -89,7 +93,7 @@ func (s *Service) configureSlaveOfNoOne() error {
 // connectRedis creates a client connection to our own redis server.
 func (s *Service) connectRedis() (*redis.Client, error) {
 	options := &redis.Options{
-		Addr:        "127.0.0.1:6379",
+		Addr:        fmt.Sprintf("127.0.0.1:%d", s.RedisPort),
 		IdleTimeout: 240 * time.Second,
 	}
 	client := redis.NewTCPClient(options)

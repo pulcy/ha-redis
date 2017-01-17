@@ -47,7 +47,7 @@ var (
 	defaultHost                = "127.0.0.1"
 	defaultPort                = 8080
 	defaultAnnouncePort        = 6379
-	defaultK8sAnnotationKey    = "pulcy.com/ha-redis/lock"
+	defaultK8sAnnotationKey    = "pulcy.com/haredis.lock"
 )
 
 var (

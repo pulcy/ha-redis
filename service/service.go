@@ -25,6 +25,7 @@ import (
 	"github.com/op/go-logging"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/pulcy/ha-redis/service/backend"
+	"github.com/pulcy/ha-redis/service/environment"
 )
 
 const (
@@ -70,19 +71,15 @@ func init() {
 type ServiceConfig struct {
 	MasterTTL time.Duration
 
-	AnnounceIP    string
-	AnnouncePort  int
-	DockerURL     string
-	ContainerName string
-
 	RedisConf           string
 	RedisAppendOnly     bool
 	RedisAppendOnlyPath string
 }
 
 type ServiceDependencies struct {
-	Logger  *logging.Logger
-	Backend backend.Backend
+	Logger      *logging.Logger
+	Backend     backend.Backend
+	Environment environment.Environment
 }
 
 type Service struct {
@@ -108,11 +105,12 @@ func (s *Service) Run() error {
 	}
 
 	// Fetch announce info
-	if err := s.fetchAnnounceInfoFromContainer(); err != nil {
+	announceIP, announcePort, err := s.Environment.FetchAnnounceInfo()
+	if err != nil {
 		return maskAny(err)
 	}
 	// Format the redis URL to use if we're master
-	s.ourRedisUrl = fmt.Sprintf("%s:%d", s.AnnounceIP, s.AnnouncePort)
+	s.ourRedisUrl = fmt.Sprintf("%s:%d", announceIP, announcePort)
 
 	// Start our local redis
 	exitChan := make(chan int)

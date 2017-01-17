@@ -1,4 +1,4 @@
-// Copyright (c) 2016 Pulcy.
+// Copyright (c) 2017 Pulcy.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,6 +27,7 @@ import (
 
 	"github.com/pulcy/ha-redis/middleware"
 	"github.com/pulcy/ha-redis/service"
+	"github.com/pulcy/ha-redis/service/backend"
 )
 
 const (
@@ -53,9 +54,11 @@ var (
 	}
 	log   = logging.MustGetLogger(projectName)
 	flags struct {
-		etcdURL string
-		Host    string
-		Port    int
+		etcdURL       string
+		etcdEndpoints []string
+		etcdPath      string
+		Host          string
+		Port          int
 		service.ServiceConfig
 		logLevel string
 	}
@@ -71,8 +74,8 @@ func init() {
 	cmdMain.Flags().BoolVar(&flags.RedisAppendOnly, "redis-appendonly", false, "If set, will turn on appendonly mode in redis")
 	cmdMain.Flags().StringVar(&flags.RedisAppendOnlyPath, "redis-appendonly-path", defaultRedisAppendOnlyPath, "Path of the append-only file which will be checked at startup")
 	cmdMain.Flags().StringVar(&flags.etcdURL, "etcd-url", "", "URL of ETCD (path=master key)")
-	cmdMain.Flags().StringSliceVar(&flags.EtcdEndpoints, "etcd-endpoint", nil, "Etcd client endpoints")
-	cmdMain.Flags().StringVar(&flags.EtcdPath, "etcd-path", defaultEtcdPath, "Path into etcd namespace")
+	cmdMain.Flags().StringSliceVar(&flags.etcdEndpoints, "etcd-endpoint", nil, "Etcd client endpoints")
+	cmdMain.Flags().StringVar(&flags.etcdPath, "etcd-path", defaultEtcdPath, "Path into etcd namespace")
 	cmdMain.Flags().DurationVar(&flags.MasterTTL, "master-ttl", defaultMasterTTL, "TTL of master key in ETCD")
 	cmdMain.Flags().StringVar(&flags.DockerURL, "docker-url", "", "URL of docker daemon")
 	cmdMain.Flags().StringVar(&flags.ContainerName, "container-name", "", "Name of the docker container running this process")
@@ -91,8 +94,8 @@ func cmdMainRun(cmd *cobra.Command, args []string) {
 		if err != nil {
 			Exitf("--etcd-url '%s' is not valid: %#v", flags.etcdURL, err)
 		}
-		flags.EtcdEndpoints = []string{fmt.Sprintf("%s://%s", etcdUrl.Scheme, etcdUrl.Host)}
-		flags.EtcdPath = etcdUrl.Path
+		flags.etcdEndpoints = []string{fmt.Sprintf("%s://%s", etcdUrl.Scheme, etcdUrl.Host)}
+		flags.etcdPath = etcdUrl.Path
 	}
 
 	if flags.DockerURL != "" || flags.ContainerName != "" {
@@ -113,9 +116,16 @@ func cmdMainRun(cmd *cobra.Command, args []string) {
 	}
 	logging.SetLevel(level, projectName)
 
+	// Create backend
+	b, err := backend.NewEtcdBackend(log, flags.etcdEndpoints, flags.etcdPath, flags.MasterTTL)
+	if err != nil {
+		Exitf("Failed to create ETCD backend: %#v\n", err)
+	}
+
 	// Create service
 	s, err := service.NewService(flags.ServiceConfig, service.ServiceDependencies{
-		Logger: log,
+		Logger:  log,
+		Backend: b,
 	})
 	if err != nil {
 		Exitf("Failed to create service: %#v\n", err)
